@@ -1413,4 +1413,11 @@ static inline void pblk_setup_uuid(struct pblk *pblk)
 	uuid_le_gen(&uuid);
 	memcpy(pblk->instance_uuid, uuid.b, 16);
 }
+
+static inline char *pblk_disk_name(struct pblk *pblk)
+{
+	struct gendisk *disk = pblk->disk;
+
+	return disk->disk_name;
+}
 #endif /* PBLK_H_ */
