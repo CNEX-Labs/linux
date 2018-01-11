@@ -16,7 +16,11 @@
  *
  */
 
+#define CREATE_TRACE_POINTS
+
 #include "pblk.h"
+
+#include <trace/events/pblk.h>
 
 static void pblk_line_mark_bb(struct work_struct *work)
 {
@@ -59,6 +63,9 @@ static void pblk_mark_bb(struct pblk *pblk, struct pblk_line *line,
 		pr_err("pblk: attempted to erase bb: line:%d, pos:%d\n",
 							line->id, pos);
 
+	trace_pblk_chunk_state(pblk_disk_name(pblk), &ppa_addr,
+				NVM_CHK_ST_OFFLINE);
+
 	/* Not necessary to mark bad blocks on 2.0 spec. */
 	if (geo->version == NVM_OCSSD_SPEC_20)
 		return;
@@ -68,6 +75,7 @@ static void pblk_mark_bb(struct pblk *pblk, struct pblk_line *line,
 		return;
 
 	*ppa = ppa_addr;
+
 	pblk_gen_run_ws(pblk, NULL, ppa, pblk_line_mark_bb,
 						GFP_ATOMIC, pblk->bb_wq);
 }
