@@ -16,6 +16,8 @@
 
 #include "pblk.h"
 
+#include <trace/events/pblk.h>
+
 void pblk_submit_rec(struct work_struct *work)
 {
 	struct pblk_rec_ctx *recovery =
@@ -1013,6 +1015,8 @@ next:
 
 			spin_lock(&line->lock);
 			line->state = PBLK_LINESTATE_CLOSED;
+			trace_pblk_line_state(pblk_disk_name(pblk), line->id,
+					line->state);
 			move_list = pblk_line_gc_list(pblk, line);
 			spin_unlock(&line->lock);
 
@@ -1025,6 +1029,12 @@ next:
 			line->smeta = NULL;
 			line->emeta = NULL;
 		} else {
+			spin_lock(&line->lock);
+			line->state = PBLK_LINESTATE_OPEN;
+			trace_pblk_line_state(pblk_disk_name(pblk), line->id,
+					line->state);
+			spin_unlock(&line->lock);
+
 			if (open_lines > 1)
 				pr_err("pblk: failed to recover L2P\n");
 
