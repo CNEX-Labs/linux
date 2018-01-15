@@ -415,6 +415,9 @@ struct list_head *pblk_line_gc_list(struct pblk *pblk, struct pblk_line *line)
 		}
 	} else {
 		line->state = PBLK_LINESTATE_CORRUPT;
+		trace_pblk_line_state(pblk_disk_name(pblk), line->id,
+					line->state);
+
 		line->gc_group = PBLK_LINEGC_NONE;
 		move_list =  &l_mg->corrupt_list;
 		pr_err("pblk: corrupted vsc for line %d, vsc:%d (%d/%d/%d)\n",
@@ -1019,6 +1022,8 @@ static int pblk_line_init_metadata(struct pblk *pblk, struct pblk_line *line,
 		spin_lock(&l_mg->free_lock);
 		spin_lock(&line->lock);
 		line->state = PBLK_LINESTATE_BAD;
+		trace_pblk_line_state(pblk_disk_name(pblk), line->id,
+					line->state);
 		spin_unlock(&line->lock);
 
 		list_add_tail(&line->list, &l_mg->bad_list);
@@ -1144,6 +1149,8 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 		bitmap_weight(line->invalid_bitmap, lm->sec_per_line)) {
 		spin_lock(&line->lock);
 		line->state = PBLK_LINESTATE_BAD;
+		trace_pblk_line_state(pblk_disk_name(pblk), line->id,
+					line->state);
 		spin_unlock(&line->lock);
 
 		list_add_tail(&line->list, &l_mg->bad_list);
@@ -1206,6 +1213,8 @@ static int pblk_line_prepare(struct pblk *pblk, struct pblk_line *line)
 	if (line->state == PBLK_LINESTATE_NEW) {
 		blk_to_erase = pblk_prepare_new_line(pblk, line);
 		line->state = PBLK_LINESTATE_FREE;
+		trace_pblk_line_state(pblk_disk_name(pblk), line->id,
+					line->state);
 	} else {
 		blk_to_erase = atomic_read(&line->blk_in_line);
 	}
@@ -1220,6 +1229,8 @@ static int pblk_line_prepare(struct pblk *pblk, struct pblk_line *line)
 	}
 
 	line->state = PBLK_LINESTATE_OPEN;
+	trace_pblk_line_state(pblk_disk_name(pblk), line->id,
+				line->state);
 
 	atomic_set(&line->left_eblks, blk_to_erase);
 	atomic_set(&line->left_seblks, blk_to_erase);
@@ -1290,6 +1301,8 @@ retry:
 	if (unlikely(bit >= lm->blk_per_line)) {
 		spin_lock(&line->lock);
 		line->state = PBLK_LINESTATE_BAD;
+		trace_pblk_line_state(pblk_disk_name(pblk), line->id,
+					line->state);
 		spin_unlock(&line->lock);
 
 		list_add_tail(&line->list, &l_mg->bad_list);
@@ -1579,6 +1592,8 @@ static void __pblk_line_put(struct pblk *pblk, struct pblk_line *line)
 	spin_lock(&line->lock);
 	WARN_ON(line->state != PBLK_LINESTATE_GC);
 	line->state = PBLK_LINESTATE_FREE;
+	trace_pblk_line_state(pblk_disk_name(pblk), line->id,
+					line->state);
 	line->gc_group = PBLK_LINEGC_NONE;
 	pblk_line_free(pblk, line);
 	spin_unlock(&line->lock);
@@ -1702,8 +1717,10 @@ void pblk_line_close(struct pblk *pblk, struct pblk_line *line)
 	spin_lock(&line->lock);
 	WARN_ON(line->state != PBLK_LINESTATE_OPEN);
 	line->state = PBLK_LINESTATE_CLOSED;
-	move_list = pblk_line_gc_list(pblk, line);
+	trace_pblk_line_state(pblk_disk_name(pblk), line->id,
+					line->state);
 
+	move_list = pblk_line_gc_list(pblk, line);
 	list_add_tail(&line->list, move_list);
 
 	kfree(line->map_bitmap);
@@ -1722,6 +1739,7 @@ void pblk_line_close(struct pblk *pblk, struct pblk_line *line)
 
 	spin_unlock(&line->lock);
 	spin_unlock(&l_mg->gc_lock);
+
 }
 
 void pblk_line_close_meta(struct pblk *pblk, struct pblk_line *line)
