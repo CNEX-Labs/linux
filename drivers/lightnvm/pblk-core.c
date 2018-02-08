@@ -1433,6 +1433,7 @@ static void pblk_stop_writes(struct pblk *pblk, struct pblk_line *line)
 
 	pblk_set_space_limit(pblk);
 	pblk->state = PBLK_STATE_STOPPING;
+	trace_pblk_state(pblk_disk_name(pblk), pblk->state);
 }
 
 static void pblk_line_close_meta_sync(struct pblk *pblk)
@@ -1482,6 +1483,7 @@ void pblk_pipeline_stop(struct pblk *pblk)
 		return;
 	}
 	pblk->state = PBLK_STATE_RECOVERING;
+	trace_pblk_state(pblk_disk_name(pblk), pblk->state);
 	spin_unlock(&l_mg->free_lock);
 
 	pblk_flush_writer(pblk);
@@ -1498,6 +1500,7 @@ void pblk_pipeline_stop(struct pblk *pblk)
 
 	spin_lock(&l_mg->free_lock);
 	pblk->state = PBLK_STATE_STOPPED;
+	trace_pblk_state(pblk_disk_name(pblk), pblk->state);
 	l_mg->data_line = NULL;
 	l_mg->data_next = NULL;
 	spin_unlock(&l_mg->free_lock);
