@@ -57,6 +57,12 @@
 #define PBLK_DEFAULT_OP (11)
 
 enum {
+	PBLK_CHUNK_ERASE_START,
+	PBLK_CHUNK_ERASE_DONE,
+	PBLK_CHUNK_ERASE_FAILED,
+};
+
+enum {
 	PBLK_READ		= READ,
 	PBLK_WRITE		= WRITE,/* Write from write buffer */
 	PBLK_WRITE_INT,			/* Internal write - no write buffer */
