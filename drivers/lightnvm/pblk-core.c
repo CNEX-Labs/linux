@@ -92,6 +92,9 @@ static void __pblk_end_io_erase(struct pblk *pblk, struct nvm_rq *rqd)
 	pos = pblk_ppa_to_pos(geo, rqd->ppa_addr);
 	chunk = &line->chks[pos];
 
+	trace_pblk_chunk_state(pblk_disk_name(pblk), &rqd->ppa_addr,
+								chunk->state);
+
 	atomic_dec(&line->left_seblks);
 
 	if (rqd->error) {
@@ -1182,13 +1185,16 @@ static int pblk_prepare_new_line(struct pblk *pblk, struct pblk_line *line)
 	for (i = 0; i < lm->blk_per_line; i++) {
 		struct pblk_lun *rlun = &pblk->luns[i];
 		int pos = pblk_ppa_to_pos(geo, rlun->bppa);
-		int state = line->chks[pos].state;
+		struct nvm_chk_meta *chunk = &line->chks[pos];
 
 		/* Free chunks should not be erased */
-		if (state & NVM_CHK_ST_FREE) {
+		if (chunk->state & NVM_CHK_ST_FREE) {
 			set_bit(pblk_ppa_to_pos(geo, rlun->bppa),
 							line->erase_bitmap);
 			blk_to_erase--;
+		} else {
+			trace_pblk_chunk_state(pblk_disk_name(pblk),
+						&rlun->bppa, chunk->state);
 		}
 	}
 
@@ -1746,10 +1752,14 @@ void pblk_line_close(struct pblk *pblk, struct pblk_line *line)
 	for (i = 0; i < lm->blk_per_line; i++) {
 		struct pblk_lun *rlun = &pblk->luns[i];
 		int pos = pblk_ppa_to_pos(geo, rlun->bppa);
-		int state = line->chks[pos].state;
+		struct nvm_chk_meta *chunk = &line->chks[pos];
 
-		if (!(state & NVM_CHK_ST_OFFLINE))
-			state = NVM_CHK_ST_CLOSED;
+		if (!(chunk->state & NVM_CHK_ST_OFFLINE)) {
+			trace_pblk_chunk_state(pblk_disk_name(pblk),
+						&rlun->bppa, chunk->state);
+
+			chunk->state = NVM_CHK_ST_CLOSED;
+		}
 	}
 
 	spin_unlock(&line->lock);
