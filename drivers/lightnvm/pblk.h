@@ -1278,7 +1278,6 @@ static inline int pblk_io_aligned(struct pblk *pblk, int nr_secs)
 	return !(nr_secs % pblk->min_write_pgs);
 }
 
-#ifdef CONFIG_NVM_DEBUG
 static inline void print_ppa(struct nvm_geo *geo, struct ppa_addr *p,
 			     char *msg, int error)
 {
@@ -1297,6 +1296,7 @@ static inline void print_ppa(struct nvm_geo *geo, struct ppa_addr *p,
 	}
 }
 
+#ifdef CONFIG_NVM_DEBUG
 static inline void pblk_print_failed_rqd(struct pblk *pblk, struct nvm_rq *rqd,
 					 int error)
 {
