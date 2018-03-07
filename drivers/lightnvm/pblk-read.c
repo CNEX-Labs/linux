@@ -39,10 +39,10 @@ static int pblk_read_from_cache(struct pblk *pblk, struct bio *bio,
 }
 
 static void pblk_read_ppalist_rq(struct pblk *pblk, struct nvm_rq *rqd,
-				 sector_t blba, unsigned long *read_bitmap)
+				 struct bio *bio, sector_t blba,
+				 unsigned long *read_bitmap)
 {
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
-	struct bio *bio = rqd->bio;
 	struct ppa_addr ppas[PBLK_MAX_REQ_ADDRS];
 	int nr_secs = rqd->nr_ppas;
 	bool advanced_bio = false;
@@ -181,7 +181,6 @@ static void pblk_end_user_read(struct bio *bio)
 	WARN_ONCE(bio->bi_status, "pblk: corrupted read bio\n");
 #endif
 	bio_endio(bio);
-	bio_put(bio);
 }
 
 static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
@@ -189,7 +188,9 @@ static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
-	struct bio *bio = rqd->bio;
+	struct bio *bio = (struct bio *)r_ctx->private;
+	struct bio *int_bio = rqd->bio;
+	struct ppa_addr *ppa_list;
 	unsigned long start_time = r_ctx->start_time;
 
 	generic_end_io_acct(dev->q, READ, &pblk->disk->part0, start_time);
@@ -203,9 +204,10 @@ static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 
 	pblk_read_check_seq(pblk, rqd->meta_list, r_ctx->lba, rqd->nr_ppas);
 
-	bio_put(bio);
-	if (r_ctx->private)
-		pblk_end_user_read((struct bio *)r_ctx->private);
+	if (int_bio)
+		bio_put(int_bio);
+	if (bio)
+		pblk_end_user_read(bio);
 
 	if (put_line)
 		pblk_read_put_rqd_kref(pblk, rqd);
@@ -227,11 +229,11 @@ static void pblk_end_io_read(struct nvm_rq *rqd)
 }
 
 static int pblk_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
-				 unsigned int bio_init_idx,
+				 struct bio *bio, unsigned int bio_init_idx,
 				 unsigned long *read_bitmap)
 {
-	struct bio *new_bio, *bio = rqd->bio;
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
+	struct bio *new_bio;
 	struct bio_vec src_bv, dst_bv;
 	void *ppa_ptr = NULL;
 	void *src_p, *dst_p;
@@ -330,9 +332,8 @@ static int pblk_partial_read_bio(struct pblk *pblk, struct nvm_rq *rqd,
 
 	bio_put(new_bio);
 
-	/* Complete the original bio and associated request */
-	bio_endio(bio);
-	rqd->bio = bio;
+	/* restore original request */
+	rqd->bio = NULL;
 	rqd->nr_ppas = nr_secs;
 
 	__pblk_end_io_read(pblk, rqd, false);
@@ -347,11 +348,10 @@ err:
 	return NVM_IO_ERR;
 }
 
-static void pblk_read_rq(struct pblk *pblk, struct nvm_rq *rqd,
+static void pblk_read_rq(struct pblk *pblk, struct nvm_rq *rqd, struct bio *bio,
 			 sector_t lba, unsigned long *read_bitmap)
 {
 	struct pblk_sec_meta *meta_list = rqd->meta_list;
-	struct bio *bio = rqd->bio;
 	struct ppa_addr ppa;
 
 	pblk_lookup_l2p_seq(pblk, &ppa, lba, 1);
@@ -415,14 +415,15 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	rqd = pblk_alloc_rqd(pblk, PBLK_READ);
 
 	rqd->opcode = NVM_OP_PREAD;
-	rqd->bio = bio;
 	rqd->nr_ppas = nr_secs;
+	rqd->bio = NULL; /* cloned bio if needed */
 	rqd->private = pblk;
 	rqd->end_io = pblk_end_io_read;
 
 	r_ctx = nvm_rq_to_pdu(rqd);
 	r_ctx->start_time = jiffies;
 	r_ctx->lba = blba;
+	r_ctx->private = bio; /* original bio */
 
 	/* Save the index for this bio's start. This is needed in case
 	 * we need to fill a partial read.
@@ -440,14 +441,12 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		rqd->ppa_list = rqd->meta_list + pblk_dma_meta_size;
 		rqd->dma_ppa_list = rqd->dma_meta_list + pblk_dma_meta_size;
 
-		pblk_read_ppalist_rq(pblk, rqd, blba, &read_bitmap);
+		pblk_read_ppalist_rq(pblk, rqd, bio, blba, &read_bitmap);
 	} else {
-		pblk_read_rq(pblk, rqd, blba, &read_bitmap);
+		pblk_read_rq(pblk, rqd, bio, blba, &read_bitmap);
 	}
 
-	bio_get(bio);
 	if (bitmap_full(&read_bitmap, nr_secs)) {
-		bio_endio(bio);
 		atomic_inc(&pblk->inflight_io);
 		__pblk_end_io_read(pblk, rqd, false);
 		return NVM_IO_OK;
@@ -465,7 +464,6 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		}
 
 		rqd->bio = int_bio;
-		r_ctx->private = bio;
 
 		ret = pblk_submit_read_io(pblk, rqd);
 		if (ret) {
@@ -481,7 +479,8 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 	/* The read bio request could be partially filled by the write buffer,
 	 * but there are some holes that need to be read from the drive.
 	 */
-	return pblk_partial_read_bio(pblk, rqd, bio_init_idx, &read_bitmap);
+	return pblk_partial_read_bio(pblk, rqd, bio,
+						bio_init_idx, &read_bitmap);
 
 fail_rqd_free:
 	pblk_free_rqd(pblk, rqd, PBLK_READ);
