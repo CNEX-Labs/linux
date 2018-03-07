@@ -113,8 +113,8 @@ static int pblk_submit_read_io(struct pblk *pblk, struct nvm_rq *rqd)
 	return NVM_IO_OK;
 }
 
-static void pblk_read_check_seq(struct pblk *pblk, void *meta_list,
-				sector_t blba, int nr_lbas)
+static void pblk_read_check_seq(struct pblk *pblk, struct ppa_addr *ppa_list,
+				void *meta_list, sector_t blba, int nr_lbas)
 {
 	struct pblk_sec_meta *meta_lba_list = meta_list;
 	int i;
@@ -126,8 +126,9 @@ static void pblk_read_check_seq(struct pblk *pblk, void *meta_list,
 			continue;
 
 		if (lba != blba + i) {
-			pr_err("pblk: corrupted read LBA (%llu/%lu)\n",
-							lba, blba + i);
+			pr_err("pblk: corrupted read LBA (%llu/%lu), %d\n",
+							lba, blba + i, i);
+			print_ppa(&pblk->dev->geo, &ppa_list[i], "ERROR", i);
 			WARN_ON(1);
 		}
 	}
@@ -197,12 +198,10 @@ static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 
 	if (rqd->error)
 		pblk_log_read_err(pblk, rqd);
-#ifdef CONFIG_NVM_DEBUG
-	else
-		WARN_ONCE(bio->bi_status, "pblk: corrupted read error\n");
-#endif
 
-	pblk_read_check_seq(pblk, rqd->meta_list, r_ctx->lba, rqd->nr_ppas);
+	ppa_list = (rqd->nr_ppas > 1) ? rqd->ppa_list : &rqd->ppa_addr;
+	pblk_read_check_seq(pblk, ppa_list, rqd->meta_list, r_ctx->lba,
+								rqd->nr_ppas);
 
 	if (int_bio)
 		bio_put(int_bio);
