@@ -54,7 +54,7 @@
 /* Static pool sizes */
 #define PBLK_GEN_WS_POOL_SIZE (2)
 
-#define PBLK_DEFAULT_OP (11)
+#define PBLK_DEFAULT_OP (18)
 
 enum {
 	PBLK_CHUNK_ERASE_START,
