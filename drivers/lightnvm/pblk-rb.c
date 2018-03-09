@@ -349,8 +349,8 @@ void pblk_rb_write_entry_gc(struct pblk_rb *rb, void *data,
 	smp_store_release(&entry->w_ctx.flags, flags);
 }
 
-static int pblk_rb_flush_point_set(struct pblk_rb *rb, struct bio *bio,
-				  unsigned int pos)
+static int pblk_rb_flush_point_set(struct pblk *pblk, struct pblk_rb *rb,
+				   struct bio *bio, unsigned int pos)
 {
 	struct pblk_rb_entry *entry;
 	unsigned int sync, flush_point;
@@ -377,6 +377,7 @@ static int pblk_rb_flush_point_set(struct pblk_rb *rb, struct bio *bio,
 		bio_list_add(&entry->w_ctx.bios, bio);
 
 	pblk_rb_sync_end(rb, NULL);
+	pblk_write_kick(pblk);
 
 	return bio ? 1 : 0;
 }
@@ -417,7 +418,7 @@ void pblk_rb_flush(struct pblk_rb *rb)
 	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 	unsigned int mem = READ_ONCE(rb->mem);
 
-	if (pblk_rb_flush_point_set(rb, NULL, mem))
+	if (pblk_rb_flush_point_set(pblk, rb, NULL, mem))
 		return;
 
 	pblk_write_should_kick(pblk);
@@ -439,7 +440,7 @@ static int pblk_rb_may_write_flush(struct pblk_rb *rb, unsigned int nr_entries,
 		struct pblk *pblk = container_of(rb, struct pblk, rwb);
 
 		atomic64_inc(&pblk->nr_flush);
-		if (pblk_rb_flush_point_set(&pblk->rwb, bio, mem))
+		if (pblk_rb_flush_point_set(pblk, &pblk->rwb, bio, mem))
 			*io_ret = NVM_IO_OK;
 	}
 
