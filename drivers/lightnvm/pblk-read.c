@@ -138,7 +138,8 @@ static void pblk_read_check_seq(struct pblk *pblk, struct ppa_addr *ppa_list,
  * There can be wholes in the lba list.
  */
 static void pblk_read_check_rand(struct pblk *pblk, void *meta_list,
-				u64 *lba_list, int nr_lbas)
+				 struct ppa_addr *ppa_list,
+				 u64 *lba_list, int nr_lbas)
 {
 	struct pblk_sec_meta *meta_lba_list = meta_list;
 	int i, j;
@@ -155,6 +156,7 @@ static void pblk_read_check_rand(struct pblk *pblk, void *meta_list,
 		if (lba != meta_lba) {
 			pr_err("pblk: corrupted read LBA (%llu/%llu)\n",
 								lba, meta_lba);
+			print_ppa(&pblk->dev->geo, &ppa_list[i], "ERROR", i);
 			WARN_ON(1);
 		}
 	}
@@ -561,6 +563,7 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 	struct nvm_geo *geo = &dev->geo;
 	struct bio *bio;
 	struct nvm_rq rqd;
+	struct ppa_addr *ppa_list;
 	int data_len;
 	int ret = NVM_IO_OK;
 
@@ -612,7 +615,9 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 		goto err_free_bio;
 	}
 
-	pblk_read_check_rand(pblk, rqd.meta_list, gc_rq->lba_list, rqd.nr_ppas);
+	ppa_list = (rqd.nr_ppas > 1) ? rqd.ppa_list : &rqd.ppa_addr;
+	pblk_read_check_rand(pblk, rqd.meta_list, ppa_list,
+					gc_rq->lba_list, rqd.nr_ppas);
 
 	atomic_dec(&pblk->inflight_io);
 
