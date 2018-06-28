@@ -697,33 +697,106 @@ static void pblk_set_provision(struct pblk *pblk, long nr_free_blks)
 	atomic_set(&pblk->rl.free_user_blocks, nr_free_blks);
 }
 
+static void pblk_state_complete(struct kref *ref)
+{
+	struct pblk_pad_rq *pad_rq = container_of(ref, struct pblk_pad_rq, ref);
+
+	complete(&pad_rq->wait);
+}
+
+static void pblk_end_io_state(struct nvm_rq *rqd)
+{
+	struct pblk_pad_rq *pad_rq = rqd->private;
+	struct pblk *pblk = pad_rq->pblk;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+	struct pblk_line *line;
+	struct nvm_chk_meta *chunk;
+	int pos;
+
+	line = &pblk->lines[pblk_ppa_to_line(rqd->ppa_addr)];
+	pos = pblk_ppa_to_pos(geo, rqd->ppa_addr);
+
+	chunk = &line->chks[pos];
+
+	if (rqd->error == NVM_RSP_ERR_EMPTYPAGE)
+		chunk->state = NVM_CHK_ST_FREE;
+	else
+		chunk->state = NVM_CHK_ST_CLOSED;
+
+	bio_put(rqd->bio);
+	pblk_free_rqd(pblk, rqd, PBLK_READ);
+	kref_put(&pad_rq->ref, pblk_state_complete);
+}
+
+static int pblk_check_chunk_state(struct pblk *pblk, struct nvm_chk_meta *chunk,
+				struct ppa_addr ppa, struct pblk_pad_rq *pad_rq)
+{
+	struct nvm_rq *rqd;
+	struct bio *bio;
+	int ret;
+
+	bio = bio_alloc(GFP_KERNEL, 1);
+
+	if (pblk_bio_add_pages(pblk, bio, GFP_KERNEL, 1))
+		goto fail_free_bio;
+
+	rqd = pblk_alloc_rqd(pblk, PBLK_READ);
+
+	rqd->bio = bio;
+	rqd->opcode = NVM_OP_PREAD;
+	rqd->flags = pblk_set_read_mode(pblk, PBLK_READ_SEQUENTIAL);
+	rqd->nr_ppas = 1;
+	rqd->ppa_addr = ppa;
+	rqd->end_io = pblk_end_io_state;
+	rqd->private = pad_rq;
+
+	kref_get(&pad_rq->ref);
+
+	ret = pblk_submit_io(pblk, rqd);
+	if (ret) {
+		pr_err("pblk: I/O submissin failed: %d\n", ret);
+		goto fail_free_rqd;
+	}
+
+	return NVM_IO_OK;
+
+fail_free_rqd:
+	pblk_free_rqd(pblk, rqd, PBLK_READ);
+	pblk_bio_free_pages(pblk, bio, 0, bio->bi_vcnt);
+fail_free_bio:
+	bio_put(bio);
+
+	return NVM_IO_ERR;
+}
+
 static int pblk_setup_line_meta_12(struct pblk *pblk, struct pblk_line *line,
 				   void *chunk_meta)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	struct pblk_line_meta *lm = &pblk->lm;
+	struct pblk_pad_rq *pad_rq;
 	int i, chk_per_lun, nr_bad_chks = 0;
+
+	pad_rq = kmalloc(sizeof(struct pblk_pad_rq), GFP_KERNEL);
+	if (!pad_rq)
+		return -1;
+
+	pad_rq->pblk = pblk;
+	init_completion(&pad_rq->wait);
+	kref_init(&pad_rq->ref);
 
 	chk_per_lun = geo->num_chk * geo->pln_mode;
 
 	for (i = 0; i < lm->blk_per_line; i++) {
 		struct pblk_lun *rlun = &pblk->luns[i];
 		struct nvm_chk_meta *chunk;
-		int pos = pblk_ppa_to_pos(geo, rlun->bppa);
+		struct ppa_addr ppa = rlun->bppa;
+		int pos = pblk_ppa_to_pos(geo, ppa);
 		u8 *lun_bb_meta = chunk_meta + pos * chk_per_lun;
 
 		chunk = &line->chks[pos];
-
-		/*
-		 * In 1.2 spec. chunk state is not persisted by the device. Thus
-		 * some of the values are reset each time pblk is instantiated,
-		 * so we have to assume that the block is closed.
-		 */
-		if (lun_bb_meta[line->id] == NVM_BLK_T_FREE)
-			chunk->state =  NVM_CHK_ST_CLOSED;
-		else
-			chunk->state = NVM_CHK_ST_OFFLINE;
 
 		chunk->type = NVM_CHK_TP_W_SEQ;
 		chunk->wi = 0;
@@ -731,13 +804,31 @@ static int pblk_setup_line_meta_12(struct pblk *pblk, struct pblk_line *line,
 		chunk->cnlb = geo->clba;
 		chunk->wp = 0;
 
-		if (!(chunk->state & NVM_CHK_ST_OFFLINE))
-			continue;
+		if (lun_bb_meta[line->id] != NVM_BLK_T_FREE) {
+			chunk->state = NVM_CHK_ST_OFFLINE;
+			set_bit(pos, line->blk_bitmap);
+			nr_bad_chks++;
 
-		set_bit(pos, line->blk_bitmap);
-		nr_bad_chks++;
+			continue;
+		}
+
+		/*
+		 * In 1.2 spec. chunk state is not persisted by the device.
+		 * Recover the state based on media response.
+		 */
+		ppa.g.blk = line->id;
+		pblk_check_chunk_state(pblk, chunk, ppa, pad_rq);
 	}
 
+	kref_put(&pad_rq->ref, pblk_state_complete);
+
+	if (!wait_for_completion_io_timeout(&pad_rq->wait,
+				msecs_to_jiffies(PBLK_COMMAND_TIMEOUT_MS))) {
+		pr_err("pblk: state recovery timed out\n");
+		return -1;
+	}
+
+	kfree(pad_rq);
 	return nr_bad_chks;
 }
 
@@ -1036,6 +1127,23 @@ add_emeta_page:
 	return 0;
 }
 
+static void check_meta(struct pblk *pblk, struct pblk_line *line)
+{
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+	struct pblk_line_meta *lm = &pblk->lm;
+	int i;
+
+	for (i = 0; i < lm->blk_per_line; i++) {
+		struct pblk_lun *rlun = &pblk->luns[i];
+		struct nvm_chk_meta *chunk;
+		struct ppa_addr ppa = rlun->bppa;
+		int pos = pblk_ppa_to_pos(geo, ppa);
+
+		chunk = &line->chks[pos];
+	}
+}
+
 static int pblk_lines_init(struct pblk *pblk)
 {
 	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
@@ -1077,6 +1185,8 @@ static int pblk_lines_init(struct pblk *pblk)
 			goto fail_free_lines;
 
 		nr_free_chks += pblk_setup_line_meta(pblk, line, chunk_meta, i);
+
+		check_meta(pblk, line);
 	}
 
 	if (!nr_free_chks) {
