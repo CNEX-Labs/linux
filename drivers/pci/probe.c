@@ -1085,7 +1085,7 @@ static int pci_scan_bridge_extend(struct pci_bus *bus, struct pci_dev *dev,
 	}
 
 	/* Check if setup is sensible at all */
-	if (!pass &&
+	if (!pass && (secondary || subordinate) &&
 	    (primary != bus->number || secondary <= bus->number ||
 	     secondary > subordinate)) {
 		pci_info(dev, "bridge configuration invalid ([bus %02x-%02x]), reconfiguring\n",
