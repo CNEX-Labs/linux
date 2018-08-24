@@ -570,6 +570,7 @@ static void pblk_line_meta_free(struct pblk_line_mgmt *l_mg,
 {
 	struct pblk_w_err_gc *w_err_gc = line->w_err_gc;
 
+	kfree(line->map);
 	kfree(line->blk_bitmap);
 	kfree(line->erase_bitmap);
 	kfree(line->chks);
@@ -799,9 +800,13 @@ static int pblk_alloc_line_meta(struct pblk *pblk, struct pblk_line *line)
 {
 	struct pblk_line_meta *lm = &pblk->lm;
 
+	line->map = kzalloc(sizeof(struct pblk_line_map), GFP_KERNEL);
+	if (!line->map)
+		return -ENOMEM;
+
 	line->blk_bitmap = kzalloc(lm->blk_bitmap_len, GFP_KERNEL);
 	if (!line->blk_bitmap)
-		return -ENOMEM;
+		goto free_map;
 
 	line->erase_bitmap = kzalloc(lm->blk_bitmap_len, GFP_KERNEL);
 	if (!line->erase_bitmap)
@@ -819,6 +824,8 @@ static int pblk_alloc_line_meta(struct pblk *pblk, struct pblk_line *line)
 
 	return 0;
 
+free_map:
+	kfree(line->map);
 free_chks:
 	kfree(line->chks);
 free_erase_bitmap:

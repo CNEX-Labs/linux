@@ -85,8 +85,6 @@ static int pblk_recov_l2p_from_emeta(struct pblk *pblk, struct pblk_line *line)
 		pblk_err(pblk, "line %d - inconsistent lba list(%llu/%llu)\n",
 				line->id, nr_valid_lbas, nr_lbas);
 
-	line->left_msecs = 0;
-
 	return 0;
 }
 
@@ -163,17 +161,20 @@ static int pblk_recov_pad_line(struct pblk *pblk, struct pblk_line *line,
 	struct nvm_geo *geo = &dev->geo;
 	void *meta_list;
 	struct pblk_pad_rq *pad_rq;
+	struct ppa_addr *ppa_list;
+	struct ppa_addr ppa;
 	struct nvm_rq *rqd;
 	struct bio *bio;
 	void *data;
 	__le64 *lba_list = emeta_to_lbas(pblk, line->emeta->buf);
-	u64 w_ptr = line->cur_sec;
+	u64 w_ptr;
 	int left_line_ppas, rq_ppas, rq_len;
-	int i, j;
+	int i;
 	int ret = 0;
 
 	spin_lock(&line->lock);
-	left_line_ppas = line->left_msecs;
+	left_line_ppas = pblk_line_usersecs_left(line);
+
 	spin_unlock(&line->lock);
 
 	pad_rq = kmalloc(sizeof(struct pblk_pad_rq), GFP_KERNEL);
@@ -224,33 +225,19 @@ next_pad_rq:
 
 	meta_list = rqd->meta_list;
 
-	for (i = 0; i < rqd->nr_ppas; ) {
-		struct ppa_addr ppa;
-		int pos;
+	ppa_list = nvm_rq_to_ppa_list(rqd);
+	w_ptr = pblk_map_alloc_ppas(pblk, line, rqd->nr_ppas, &ppa);
+	for (i = 0; i < rqd->nr_ppas; i++) {
+		__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
+		struct pblk_sec_meta *meta;
 
-		w_ptr = pblk_alloc_page(pblk, line, pblk->min_write_pgs);
-		ppa = addr_to_gen_ppa(pblk, w_ptr, line->id);
-		pos = pblk_ppa_to_pos(geo, ppa);
+		lba_list[w_ptr + i] = addr_empty;
+		meta = pblk_get_meta(pblk, meta_list, i);
+		meta->lba = addr_empty;
 
-		while (test_bit(pos, line->blk_bitmap)) {
-			w_ptr += pblk->min_write_pgs;
-			ppa = addr_to_gen_ppa(pblk, w_ptr, line->id);
-			pos = pblk_ppa_to_pos(geo, ppa);
-		}
-
-		for (j = 0; j < pblk->min_write_pgs; j++, i++, w_ptr++) {
-			struct ppa_addr dev_ppa;
-			struct pblk_sec_meta *meta;
-			__le64 addr_empty = cpu_to_le64(ADDR_EMPTY);
-
-			dev_ppa = addr_to_gen_ppa(pblk, w_ptr, line->id);
-
-			pblk_map_invalidate(pblk, dev_ppa);
-			lba_list[w_ptr] = addr_empty;
-			meta = pblk_get_meta(pblk, meta_list, i);
-			meta->lba = addr_empty;
-			rqd->ppa_list[i] = dev_ppa;
-		}
+		pblk_map_invalidate(pblk, ppa);
+		ppa_list[i] = ppa;
+		nvm_next_ppa_in_chk(pblk->dev, &ppa);
 	}
 
 	kref_get(&pad_rq->ref);
@@ -293,13 +280,14 @@ fail_free_pad:
 	return ret;
 }
 
-static int pblk_pad_distance(struct pblk *pblk, struct pblk_line *line)
+static inline int pblk_pad_distance(struct pblk *pblk, struct pblk_line *line)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	int distance = geo->mw_cunits * geo->all_luns * geo->ws_opt;
+	int usersecs_left = pblk_line_usersecs_left(line);
 
-	return (distance > line->left_msecs) ? line->left_msecs : distance;
+	return (distance > usersecs_left) ? usersecs_left : distance;
 }
 
 static int pblk_line_wp_is_unbalanced(struct pblk *pblk,
@@ -748,6 +736,8 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 
 	/* Verify closed blocks and recover this portion of L2P table*/
 	list_for_each_entry_safe(line, tline, &recov_list, list) {
+		int line_was_closed = 0;
+
 		recovered_lines++;
 
 		line->emeta_ssec = pblk_line_emeta_start(pblk, line);
@@ -776,9 +766,11 @@ struct pblk_line *pblk_recov_l2p(struct pblk *pblk)
 
 		if (pblk_recov_l2p_from_emeta(pblk, line))
 			pblk_recov_l2p_from_oob(pblk, line);
+		else
+			line_was_closed = 1;
 
 next:
-		if (pblk_line_is_full(line)) {
+		if (line_was_closed) {
 			struct list_head *move_list;
 
 			spin_lock(&line->lock);
@@ -792,8 +784,7 @@ next:
 			list_move_tail(&line->list, move_list);
 			spin_unlock(&l_mg->gc_lock);
 
-			mempool_free(line->map_bitmap, l_mg->bitmap_pool);
-			line->map_bitmap = NULL;
+			pblk_line_map_free(line);
 			line->smeta = NULL;
 			line->emeta = NULL;
 		} else {
@@ -854,7 +845,7 @@ int pblk_recov_pad(struct pblk *pblk)
 
 	spin_lock(&l_mg->free_lock);
 	line = l_mg->data_line;
-	left_msecs = line->left_msecs;
+	left_msecs = pblk_line_usersecs_left(line);
 	spin_unlock(&l_mg->free_lock);
 
 	ret = pblk_recov_pad_line(pblk, line, left_msecs);

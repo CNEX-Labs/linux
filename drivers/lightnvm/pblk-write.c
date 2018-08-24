@@ -121,11 +121,10 @@ static void pblk_map_remaining(struct pblk *pblk, struct ppa_addr *ppa,
 
 	spin_lock(&line->lock);
 
+	pblk_line_map_stop_writing_to_chk(line, ppa);
+
 	while (!done)  {
 		paddr = pblk_dev_ppa_to_line_addr(pblk, map_ppa);
-
-		if (!test_and_set_bit(paddr, line->map_bitmap))
-			line->left_msecs--;
 
 		if (n < rqd_ppas && lba_list[paddr] != addr_empty)
 			line->nr_valid_lbas--;
@@ -368,16 +367,16 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 	struct pblk_line_meta *lm = &pblk->lm;
 	struct pblk_emeta *emeta = meta_line->emeta;
 	struct ppa_addr *ppa_list;
+	struct pblk_sec_meta *meta_list;
+	struct ppa_addr ppa;
 	struct pblk_g_ctx *m_ctx;
 	struct bio *bio;
 	struct nvm_rq *rqd;
 	void *data;
-	u64 paddr;
 	int rq_ppas = pblk->min_write_pgs;
-	int id = meta_line->id;
 	int rq_len;
-	int i, j;
 	int ret;
+	int i;
 
 	rqd = pblk_alloc_rqd(pblk, PBLK_WRITE_INT);
 
@@ -403,12 +402,13 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 		goto fail_free_bio;
 
 	ppa_list = nvm_rq_to_ppa_list(rqd);
-	for (i = 0; i < rqd->nr_ppas; ) {
-		spin_lock(&meta_line->lock);
-		paddr = __pblk_alloc_page(pblk, meta_line, rq_ppas);
-		spin_unlock(&meta_line->lock);
-		for (j = 0; j < rq_ppas; j++, i++, paddr++)
-			ppa_list[i] = addr_to_gen_ppa(pblk, paddr, id);
+	meta_list = rqd->meta_list;
+	pblk_map_alloc_ppas(pblk, meta_line, rqd->nr_ppas, &ppa);
+
+	for (i = 0; i < rqd->nr_ppas; i++) {
+		meta_list[i].lba = cpu_to_le64(ADDR_EMPTY);
+		ppa_list[i] = ppa;
+		nvm_next_ppa_in_chk(pblk->dev, &ppa);
 	}
 
 	spin_lock(&l_mg->close_lock);

@@ -443,6 +443,12 @@ struct pblk_w_err_gc {
 	__le64 *lba_list;
 };
 
+struct pblk_line_map {
+	unsigned long *bitmap;		/* Bitmap for mapped sectors in line */
+	int left_msecs;			/* Sectors left for mapping */
+	unsigned int cur_sec;		/* Sector map pointer */
+};
+
 struct pblk_line {
 	struct pblk *pblk;
 	unsigned int id;		/* Line number corresponds to the
@@ -465,25 +471,21 @@ struct pblk_line {
 	int meta_line;			/* Metadata line id */
 	int meta_distance;		/* Distance between data and metadata */
 
-	u64 smeta_ssec;			/* Sector where smeta starts */
 	u64 emeta_ssec;			/* Sector where emeta starts */
 
 	unsigned int sec_in_line;	/* Number of usable secs in line */
+	unsigned int nr_valid_lbas;	/* Number of valid lbas in line */
 
 	atomic_t blk_in_line;		/* Number of good blocks in line */
 	unsigned long *blk_bitmap;	/* Bitmap for valid/invalid blocks */
 	unsigned long *erase_bitmap;	/* Bitmap for erased blocks */
 
-	unsigned long *map_bitmap;	/* Bitmap for mapped sectors in line */
-
 	unsigned long **invalid_bitmaps;/* Per-chunk invalid sector bitmaps */
+
+	struct pblk_line_map *map;	/* Line mapping algorithm context */
 
 	atomic_t left_eblks;		/* Blocks left for erasing */
 	atomic_t left_seblks;		/* Blocks left for sync erasing */
-
-	int left_msecs;			/* Sectors left for mapping */
-	unsigned int cur_sec;		/* Sector map pointer */
-	unsigned int nr_valid_lbas;	/* Number of valid lbas in line */
 
 	__le32 *vsc;			/* Valid sector count in line */
 
@@ -820,6 +822,7 @@ void pblk_line_recov_close(struct pblk *pblk, struct pblk_line *line);
 struct pblk_line *pblk_line_get_data(struct pblk *pblk);
 struct pblk_line *pblk_line_get_erase(struct pblk *pblk);
 int pblk_line_erase(struct pblk *pblk, struct pblk_line *line);
+int pblk_line_usersecs_left(struct pblk_line *line);
 int pblk_line_is_full(struct pblk_line *line);
 void pblk_line_free(struct pblk_line *line);
 void pblk_line_close_meta(struct pblk *pblk, struct pblk_line *line);
@@ -839,10 +842,6 @@ int pblk_blk_erase_async(struct pblk *pblk, struct ppa_addr erase_ppa);
 void pblk_line_put(struct kref *ref);
 void pblk_line_put_wq(struct kref *ref);
 struct list_head *pblk_line_gc_list(struct pblk *pblk, struct pblk_line *line);
-u64 pblk_lookup_page(struct pblk *pblk, struct pblk_line *line);
-void pblk_dealloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
-u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
-u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
 int pblk_calc_secs(struct pblk *pblk, unsigned long secs_avail,
 		   unsigned long secs_to_flush, bool skip_meta);
 void pblk_down_rq(struct pblk *pblk, struct ppa_addr ppa,
@@ -887,7 +886,20 @@ int pblk_map_erase_rq(struct pblk *pblk, struct nvm_rq *rqd,
 int pblk_map_rq(struct pblk *pblk, struct nvm_rq *rqd, unsigned int sentry,
 		 unsigned long *lun_bitmap, unsigned int valid_secs,
 		 unsigned int off);
+int pblk_line_map_init(struct pblk_line *line);
+void pblk_line_map_free(struct pblk_line *line);
+unsigned int pblk_line_secs_left_to_map(struct pblk_line *line);
+unsigned int pblk_line_map_cur_sec(struct pblk_line *line);
+int pblk_line_map_is_full(struct pblk_line *line);
+void pblk_line_map_stop_writing_to_chk(struct pblk_line *line,
+				       struct ppa_addr *ppa);
+u64 pblk_lookup_page(struct pblk *pblk, struct pblk_line *line);
+void pblk_dealloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
+u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
+u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
 
+u64 pblk_map_alloc_ppas(struct pblk *pblk, struct pblk_line *line,
+			      int nr_secs, struct ppa_addr *start_ppa);
 /*
  * pblk write thread
  */

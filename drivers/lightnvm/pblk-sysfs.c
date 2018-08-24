@@ -178,7 +178,7 @@ static ssize_t pblk_sysfs_lines(struct pblk *pblk, char *page)
 
 	int bad = 0, cor = 0;
 	int msecs = 0, cur_sec = 0, vsc = 0, sec_in_line = 0;
-	int map_weight = 0, meta_weight = 0;
+	int mapped = 0, meta_weight = 0;
 
 	spin_lock(&l_mg->free_lock);
 	cur_data = (l_mg->data_line) ? l_mg->data_line->id : -1;
@@ -257,19 +257,15 @@ static ssize_t pblk_sysfs_lines(struct pblk *pblk, char *page)
 
 	spin_lock(&l_mg->free_lock);
 	if (l_mg->data_line) {
-		cur_sec = l_mg->data_line->cur_sec;
-		msecs = l_mg->data_line->left_msecs;
+		cur_sec = pblk_line_map_cur_sec(l_mg->data_line);
+		msecs = pblk_line_secs_left_to_map(l_mg->data_line);
 		vsc = le32_to_cpu(*l_mg->data_line->vsc);
 		sec_in_line = l_mg->data_line->sec_in_line;
 		meta_weight = bitmap_weight(&l_mg->meta_bitmap,
 							PBLK_DATA_LINES);
 
 		spin_lock(&l_mg->data_line->lock);
-		if (l_mg->data_line->map_bitmap)
-			map_weight = bitmap_weight(l_mg->data_line->map_bitmap,
-							lm->sec_per_line);
-		else
-			map_weight = 0;
+		mapped = pblk_line_map_cur_sec(l_mg->data_line);
 		spin_unlock(&l_mg->data_line->lock);
 	}
 	spin_unlock(&l_mg->free_lock);
@@ -300,7 +296,7 @@ static ssize_t pblk_sysfs_lines(struct pblk *pblk, char *page)
 	sz += snprintf(page + sz, PAGE_SIZE - sz,
 		"data (%d) cur:%d, left:%d, vsc:%d, s:%d, map:%d/%d (%d)\n",
 			cur_data, cur_sec, msecs, vsc, sec_in_line,
-			map_weight, lm->sec_per_line,
+			mapped, lm->sec_per_line,
 			atomic_read(&pblk->inflight_io));
 
 	return sz;
