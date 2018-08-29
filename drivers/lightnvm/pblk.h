@@ -229,7 +229,7 @@ struct pblk_lun {
 struct pblk_gc_rq {
 	struct pblk_line *line;
 	void *data;
-	u64 paddr_list[NVM_MAX_VLBA];
+	struct ppa_addr ppa_list[NVM_MAX_VLBA];
 	u64 lba_list[NVM_MAX_VLBA];
 	int nr_secs;
 	int secs_to_gc;
@@ -475,7 +475,8 @@ struct pblk_line {
 	unsigned long *erase_bitmap;	/* Bitmap for erased blocks */
 
 	unsigned long *map_bitmap;	/* Bitmap for mapped sectors in line */
-	unsigned long *invalid_bitmap;	/* Bitmap for invalid sectors in line */
+
+	unsigned long **invalid_bitmaps;/* Per-chunk invalid sector bitmaps */
 
 	atomic_t left_eblks;		/* Blocks left for erasing */
 	atomic_t left_seblks;		/* Blocks left for sync erasing */
@@ -752,7 +753,7 @@ void pblk_rb_write_entry_user(struct pblk_rb *rb, void *data,
 			      struct pblk_w_ctx w_ctx, unsigned int pos);
 void pblk_rb_write_entry_gc(struct pblk_rb *rb, void *data,
 			    struct pblk_w_ctx w_ctx, struct pblk_line *line,
-			    u64 paddr, unsigned int pos);
+			    struct ppa_addr ppa, unsigned int pos);
 struct pblk_w_ctx *pblk_rb_w_ctx(struct pblk_rb *rb, unsigned int pos);
 void pblk_rb_flush(struct pblk_rb *rb);
 
@@ -795,6 +796,10 @@ struct nvm_chk_meta *pblk_get_chunk_meta(struct pblk *pblk);
 struct nvm_chk_meta *pblk_chunk_get_off(struct pblk *pblk,
 					      struct nvm_chk_meta *lp,
 					      struct ppa_addr ppa);
+int pblk_paddr_is_invalid(struct pblk_line *line, u64 paddr);
+bool pblk_invalidate_paddr(struct pblk_line *line, u64 paddr);
+int pblk_invalidate_ppa(struct pblk *pblk, struct pblk_line *line,
+			struct ppa_addr ppa);
 void pblk_log_write_err(struct pblk *pblk, struct nvm_rq *rqd);
 void pblk_log_read_err(struct pblk *pblk, struct nvm_rq *rqd);
 int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd);
@@ -858,7 +863,7 @@ void pblk_update_map_cache(struct pblk *pblk, sector_t lba,
 void pblk_update_map_dev(struct pblk *pblk, sector_t lba,
 			 struct ppa_addr ppa, struct ppa_addr entry_line);
 int pblk_update_map_gc(struct pblk *pblk, sector_t lba, struct ppa_addr ppa,
-		       struct pblk_line *gc_line, u64 paddr);
+		       struct pblk_line *gc_line, struct ppa_addr ppa_gc);
 void pblk_lookup_l2p_rand(struct pblk *pblk, struct ppa_addr *ppas,
 			  u64 *lba_list, int nr_secs);
 void pblk_lookup_l2p_seq(struct pblk *pblk, struct ppa_addr *ppas,

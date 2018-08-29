@@ -508,10 +508,10 @@ end_io:
 
 static int read_ppalist_rq_gc(struct pblk *pblk, struct nvm_rq *rqd,
 			      struct pblk_line *line, u64 *lba_list,
-			      u64 *paddr_list_gc, unsigned int nr_secs)
+			      struct ppa_addr *ppa_list_gc,
+			      unsigned int nr_secs)
 {
 	struct ppa_addr ppa_list_l2p[NVM_MAX_VLBA];
-	struct ppa_addr ppa_gc;
 	int valid_secs = 0;
 	int i;
 
@@ -521,9 +521,8 @@ static int read_ppalist_rq_gc(struct pblk *pblk, struct nvm_rq *rqd,
 		if (lba_list[i] == ADDR_EMPTY)
 			continue;
 
-		ppa_gc = addr_to_gen_ppa(pblk, paddr_list_gc[i], line->id);
-		if (!pblk_ppa_comp(ppa_list_l2p[i], ppa_gc)) {
-			paddr_list_gc[i] = lba_list[i] = ADDR_EMPTY;
+		if (!pblk_ppa_comp(ppa_list_l2p[i], ppa_list_gc[i])) {
+			ppa_list_gc[i].ppa = lba_list[i] = ADDR_EMPTY;
 			continue;
 		}
 
@@ -539,9 +538,9 @@ static int read_ppalist_rq_gc(struct pblk *pblk, struct nvm_rq *rqd,
 
 static int read_rq_gc(struct pblk *pblk, struct nvm_rq *rqd,
 		      struct pblk_line *line, sector_t lba,
-		      u64 paddr_gc)
+		      struct ppa_addr ppa_gc)
 {
-	struct ppa_addr ppa_l2p, ppa_gc;
+	struct ppa_addr ppa_l2p;
 	int valid_secs = 0;
 
 	if (lba == ADDR_EMPTY)
@@ -557,7 +556,6 @@ static int read_rq_gc(struct pblk *pblk, struct nvm_rq *rqd,
 	ppa_l2p = pblk_trans_map_get(pblk, lba);
 	spin_unlock(&pblk->trans_lock);
 
-	ppa_gc = addr_to_gen_ppa(pblk, paddr_gc, line->id);
 	if (!pblk_ppa_comp(ppa_l2p, ppa_gc))
 		goto out;
 
@@ -590,14 +588,15 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 	if (gc_rq->nr_secs > 1) {
 		gc_rq->secs_to_gc = read_ppalist_rq_gc(pblk, &rqd, gc_rq->line,
 							gc_rq->lba_list,
-							gc_rq->paddr_list,
+							gc_rq->ppa_list,
 							gc_rq->nr_secs);
 		if (gc_rq->secs_to_gc == 1)
 			rqd.ppa_addr = rqd.ppa_list[0];
 	} else {
 		gc_rq->secs_to_gc = read_rq_gc(pblk, &rqd, gc_rq->line,
 							gc_rq->lba_list[0],
-							gc_rq->paddr_list[0]);
+							gc_rq->ppa_list[0]);
+
 	}
 
 	if (!(gc_rq->secs_to_gc))

@@ -132,7 +132,7 @@ static void pblk_map_remaining(struct pblk *pblk, struct ppa_addr *ppa,
 
 		lba_list[paddr] = addr_empty;
 
-		if (!test_and_set_bit(paddr, line->invalid_bitmap))
+		if (!pblk_invalidate_paddr(line, paddr))
 			le32_add_cpu(line->vsc, -1);
 
 		done = nvm_next_ppa_in_chk(pblk->dev, &map_ppa);

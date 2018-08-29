@@ -161,6 +161,85 @@ struct nvm_chk_meta *pblk_chunk_get_off(struct pblk *pblk,
 	return meta + ch_off + lun_off + chk_off;
 }
 
+
+int pblk_invalidate_ppa(struct pblk *pblk, struct pblk_line *line,
+			struct ppa_addr ppa)
+{
+	struct nvm_tgt_dev *dev = pblk->dev;
+	int pos;
+	u64 caddr;
+
+	pos = pblk_ppa_to_pos(&dev->geo, ppa);
+	caddr = pblk_dev_ppa_to_chunk_addr(pblk, ppa);
+
+	return test_and_set_bit(caddr, line->invalid_bitmaps[pos]);
+}
+
+static bool pblk_ppa_is_invalid(struct pblk *pblk, struct pblk_line *line,
+			struct ppa_addr ppa)
+{
+	struct nvm_tgt_dev *dev = pblk->dev;
+	int pos;
+	u64 caddr;
+
+	pos = pblk_ppa_to_pos(&dev->geo, ppa);
+	caddr = pblk_dev_ppa_to_chunk_addr(pblk, ppa);
+
+	return test_bit(caddr, line->invalid_bitmaps[pos]);
+}
+
+bool pblk_invalidate_paddr(struct pblk_line *line, u64 paddr)
+{
+
+	struct pblk *pblk = line->pblk;
+	struct ppa_addr ppa;
+
+	ppa = addr_to_gen_ppa(pblk, paddr, line->id);
+
+	return pblk_invalidate_ppa(pblk, line, ppa);
+}
+
+
+int pblk_paddr_is_invalid(struct pblk_line *line, u64 paddr)
+{
+
+	struct pblk *pblk = line->pblk;
+	struct ppa_addr ppa;
+
+	ppa = addr_to_gen_ppa(pblk, paddr, line->id);
+
+	return pblk_ppa_is_invalid(pblk, line, ppa);
+}
+
+static u64 pblk_invalid_secs_in_line(struct pblk_line *line)
+{
+	struct pblk *pblk = line->pblk;
+	struct pblk_line_meta *lm = &pblk->lm;
+	size_t blks = lm->blk_per_line;
+	u64 sum = 0;
+	int i;
+
+	for (i = 0; i < blks; i++) {
+		struct nvm_chk_meta *chunk = &line->chks[i];
+		u64 cnlb = chunk->cnlb;
+
+		sum += bitmap_weight(line->invalid_bitmaps[i], cnlb);
+	}
+
+	return sum;
+}
+
+
+static void pblk_invalidate_paddrs(struct pblk_line *line, u64 paddr_start,
+				   int len)
+{
+	u64 i;
+
+	for (i = paddr_start; i < (paddr_start + len); i++)
+		pblk_invalidate_paddr(line, i);
+}
+
+
 void __pblk_map_invalidate(struct pblk *pblk, struct pblk_line *line,
 			   u64 paddr)
 {
@@ -174,7 +253,7 @@ void __pblk_map_invalidate(struct pblk *pblk, struct pblk_line *line,
 	spin_lock(&line->lock);
 	WARN_ON(line->state == PBLK_LINESTATE_FREE);
 
-	if (test_and_set_bit(paddr, line->invalid_bitmap)) {
+	if (pblk_invalidate_paddr(line, paddr)) {
 		WARN_ONCE(1, "pblk: double invalidate\n");
 		spin_unlock(&line->lock);
 		return;
@@ -1105,6 +1184,60 @@ static int pblk_line_init_metadata(struct pblk *pblk, struct pblk_line *line,
 	return 1;
 }
 
+static int pblk_init_invalid_bitmaps(struct pblk_line *line)
+{
+	struct pblk *pblk = line->pblk;
+	struct pblk_line_meta *lm = &pblk->lm;
+	size_t blks = lm->blk_per_line;
+	int i;
+
+	line->invalid_bitmaps = kcalloc(blks, sizeof(long *),  GFP_KERNEL);
+	if (!line->invalid_bitmaps)
+		return -ENOMEM;
+
+	for (i = 0; i < blks; i++) {
+		struct nvm_chk_meta *chunk = &line->chks[i];
+		u64 cnlb = chunk->cnlb;
+		long *bitmap;
+
+		bitmap = kcalloc(BITS_TO_LONGS(cnlb), sizeof(long),
+				 GFP_ATOMIC);
+		if (!bitmap)
+			goto fail_free_invalid_bitmaps;
+
+		if (chunk->state & NVM_CHK_ST_OFFLINE)
+			bitmap_set(bitmap, 0, cnlb);
+
+		line->invalid_bitmaps[i] = bitmap;
+	}
+
+	return 0;
+
+fail_free_invalid_bitmaps:
+	for (--i; i >= 0;)
+		kfree(line->invalid_bitmaps[i]);
+
+	kfree(line->invalid_bitmaps);
+
+	return -ENOMEM;
+}
+
+static void pblk_free_invalid_bitmaps(struct pblk_line *line)
+{
+	struct pblk *pblk = line->pblk;
+	struct pblk_line_meta *lm = &pblk->lm;
+	size_t blks = lm->blk_per_line;
+	int i;
+
+	if (line->invalid_bitmaps) {
+		for (i = 0; i < blks; i++)
+			kfree(line->invalid_bitmaps[i]);
+
+		kfree(line->invalid_bitmaps);
+		line->invalid_bitmaps = NULL;
+	}
+}
+
 static int pblk_line_alloc_bitmaps(struct pblk *pblk, struct pblk_line *line)
 {
 	struct pblk_line_meta *lm = &pblk->lm;
@@ -1116,9 +1249,7 @@ static int pblk_line_alloc_bitmaps(struct pblk *pblk, struct pblk_line *line)
 
 	memset(line->map_bitmap, 0, lm->sec_bitmap_len);
 
-	/* will be initialized using bb info from map_bitmap */
-	line->invalid_bitmap = mempool_alloc(l_mg->bitmap_pool, GFP_KERNEL);
-	if (!line->invalid_bitmap) {
+	if (pblk_init_invalid_bitmaps(line)) {
 		mempool_free(line->map_bitmap, l_mg->bitmap_pool);
 		line->map_bitmap = NULL;
 		return -ENOMEM;
@@ -1162,12 +1293,13 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	line->smeta_ssec = off;
 	line->cur_sec = off + lm->smeta_sec;
 
+	pblk_invalidate_paddrs(line, off, lm->smeta_sec);
+
 	if (init && pblk_line_smeta_write(pblk, line, off)) {
 		pblk_debug(pblk, "line smeta I/O failed. Retry\n");
 		return 0;
 	}
 
-	bitmap_copy(line->invalid_bitmap, line->map_bitmap, lm->sec_per_line);
 
 	/* Mark emeta metadata sectors as bad sectors. We need to consider bad
 	 * blocks to make sure that there are enough sectors to store emeta
@@ -1176,8 +1308,8 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	off = lm->sec_per_line;
 	while (emeta_secs) {
 		off -= geo->ws_opt;
-		if (!test_bit(off, line->invalid_bitmap)) {
-			bitmap_set(line->invalid_bitmap, off, geo->ws_opt);
+		if (!pblk_paddr_is_invalid(line, off)) {
+			pblk_invalidate_paddrs(line, off, geo->ws_opt);
 			emeta_secs -= geo->ws_opt;
 		}
 	}
@@ -1189,7 +1321,7 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 	*line->vsc = cpu_to_le32(line->sec_in_line);
 
 	if (lm->sec_per_line - line->sec_in_line !=
-		bitmap_weight(line->invalid_bitmap, lm->sec_per_line)) {
+	    pblk_invalid_secs_in_line(line)) {
 		spin_lock(&line->lock);
 		line->state = PBLK_LINESTATE_BAD;
 		trace_pblk_line_state(pblk_disk_name(pblk), line->id,
@@ -1332,7 +1464,6 @@ static void pblk_line_reinit(struct pblk_line *line)
 	*line->vsc = cpu_to_le32(EMPTY_ENTRY);
 
 	line->map_bitmap = NULL;
-	line->invalid_bitmap = NULL;
 	line->smeta = NULL;
 	line->emeta = NULL;
 }
@@ -1343,7 +1474,7 @@ void pblk_line_free(struct pblk_line *line)
 	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
 
 	mempool_free(line->map_bitmap, l_mg->bitmap_pool);
-	mempool_free(line->invalid_bitmap, l_mg->bitmap_pool);
+	pblk_free_invalid_bitmaps(line);
 
 	pblk_line_reinit(line);
 }
@@ -1410,22 +1541,23 @@ static struct pblk_line *pblk_line_retry(struct pblk *pblk,
 retry:
 	spin_lock(&l_mg->free_lock);
 	retry_line = pblk_line_get(pblk);
+	spin_unlock(&l_mg->free_lock);
+
 	if (!retry_line) {
 		l_mg->data_line = NULL;
-		spin_unlock(&l_mg->free_lock);
 		return NULL;
 	}
 
 	retry_line->map_bitmap = line->map_bitmap;
-	retry_line->invalid_bitmap = line->invalid_bitmap;
 	retry_line->smeta = line->smeta;
 	retry_line->emeta = line->emeta;
 	retry_line->meta_line = line->meta_line;
 
-	pblk_line_reinit(line);
-
+	pblk_init_invalid_bitmaps(retry_line);
 	l_mg->data_line = retry_line;
-	spin_unlock(&l_mg->free_lock);
+
+	pblk_free_invalid_bitmaps(line);
+	pblk_line_reinit(line);
 
 	pblk_rl_free_lines_dec(&pblk->rl, line, false);
 
@@ -2046,9 +2178,9 @@ void pblk_update_map_cache(struct pblk *pblk, sector_t lba, struct ppa_addr ppa)
 }
 
 int pblk_update_map_gc(struct pblk *pblk, sector_t lba, struct ppa_addr ppa_new,
-		       struct pblk_line *gc_line, u64 paddr_gc)
+		       struct pblk_line *gc_line, struct ppa_addr ppa_gc)
 {
-	struct ppa_addr ppa_l2p, ppa_gc;
+	struct ppa_addr ppa_l2p;
 	int ret = 1;
 
 #ifdef CONFIG_NVM_PBLK_DEBUG
@@ -2065,11 +2197,11 @@ int pblk_update_map_gc(struct pblk *pblk, sector_t lba, struct ppa_addr ppa_new,
 
 	spin_lock(&pblk->trans_lock);
 	ppa_l2p = pblk_trans_map_get(pblk, lba);
-	ppa_gc = addr_to_gen_ppa(pblk, paddr_gc, gc_line->id);
 
 	if (!pblk_ppa_comp(ppa_l2p, ppa_gc)) {
 		spin_lock(&gc_line->lock);
-		WARN(!test_bit(paddr_gc, gc_line->invalid_bitmap),
+
+		WARN(!pblk_ppa_is_invalid(pblk, gc_line, ppa_gc),
 						"pblk: corrupted GC update");
 		spin_unlock(&gc_line->lock);
 

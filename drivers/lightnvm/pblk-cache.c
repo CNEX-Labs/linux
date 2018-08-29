@@ -114,7 +114,7 @@ retry:
 
 		pos = pblk_rb_wrap_pos(&pblk->rwb, bpos + valid_entries);
 		pblk_rb_write_entry_gc(&pblk->rwb, data, w_ctx, gc_rq->line,
-						gc_rq->paddr_list[i], pos);
+						gc_rq->ppa_list[i], pos);
 
 		data += PBLK_EXPOSED_PAGE_SIZE;
 		valid_entries++;

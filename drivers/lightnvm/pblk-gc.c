@@ -188,17 +188,13 @@ static void pblk_gc_line_prepare_ws(struct work_struct *work)
 	struct pblk *pblk = line_ws->pblk;
 	struct pblk_line *line = line_ws->line;
 	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
-	struct pblk_line_meta *lm = &pblk->lm;
 	struct pblk_gc *gc = &pblk->gc;
 	struct pblk_line_ws *gc_rq_ws;
 	struct pblk_gc_rq *gc_rq;
 	__le64 *lba_list;
-	unsigned long *invalid_bitmap;
-	int sec_left, nr_secs, bit;
-
-	invalid_bitmap = kmalloc(lm->sec_bitmap_len, GFP_KERNEL);
-	if (!invalid_bitmap)
-		goto fail_free_ws;
+	int nr_secs;
+	bool done = 0;
+	u64 paddr = 0;
 
 	if (line->w_err_gc->has_write_err) {
 		lba_list = line->w_err_gc->lba_list;
@@ -208,21 +204,10 @@ static void pblk_gc_line_prepare_ws(struct work_struct *work)
 		if (!lba_list) {
 			pblk_err(pblk, "could not interpret emeta (line %d)\n",
 					line->id);
-			goto fail_free_invalid_bitmap;
+			goto fail_free_ws;
 		}
 	}
 
-	spin_lock(&line->lock);
-	bitmap_copy(invalid_bitmap, line->invalid_bitmap, lm->sec_per_line);
-	sec_left = pblk_line_vsc(line);
-	spin_unlock(&line->lock);
-
-	if (sec_left < 0) {
-		pblk_err(pblk, "corrupted GC line (%d)\n", line->id);
-		goto fail_free_lba_list;
-	}
-
-	bit = -1;
 next_rq:
 	gc_rq = kmalloc(sizeof(struct pblk_gc_rq), GFP_KERNEL);
 	if (!gc_rq)
@@ -230,14 +215,19 @@ next_rq:
 
 	nr_secs = 0;
 	do {
-		bit = find_next_zero_bit(invalid_bitmap, lm->sec_per_line,
-								bit + 1);
-		if (bit > line->emeta_ssec)
-			break;
+		if (!pblk_paddr_is_invalid(line, paddr)) {
+			u64 lba = le64_to_cpu(lba_list[paddr]);
 
-		gc_rq->paddr_list[nr_secs] = bit;
-		gc_rq->lba_list[nr_secs++] = le64_to_cpu(lba_list[bit]);
-	} while (nr_secs < pblk->max_write_pgs);
+			gc_rq->ppa_list[nr_secs] = addr_to_gen_ppa(pblk, paddr,
+								line->id);
+			gc_rq->lba_list[nr_secs++] = lba;
+		}
+
+		paddr++;
+		if (paddr == line->emeta_ssec)
+			done = 1;
+
+	} while ((nr_secs < pblk->max_write_pgs) && !done);
 
 	if (unlikely(!nr_secs)) {
 		kfree(gc_rq);
@@ -267,14 +257,12 @@ next_rq:
 	INIT_WORK(&gc_rq_ws->ws, pblk_gc_line_ws);
 	queue_work(gc->gc_line_reader_wq, &gc_rq_ws->ws);
 
-	sec_left -= nr_secs;
-	if (sec_left > 0)
+	if (!done)
 		goto next_rq;
 
 out:
 	pblk_mfree(lba_list, l_mg->emeta_alloc_type);
 	kfree(line_ws);
-	kfree(invalid_bitmap);
 
 	kref_put(&line->ref, pblk_line_put);
 	atomic_dec(&gc->read_inflight_gc);
@@ -285,8 +273,6 @@ fail_free_gc_rq:
 	kfree(gc_rq);
 fail_free_lba_list:
 	pblk_mfree(lba_list, l_mg->emeta_alloc_type);
-fail_free_invalid_bitmap:
-	kfree(invalid_bitmap);
 fail_free_ws:
 	kfree(line_ws);
 

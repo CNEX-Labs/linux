@@ -345,7 +345,7 @@ void pblk_rb_write_entry_user(struct pblk_rb *rb, void *data,
 
 void pblk_rb_write_entry_gc(struct pblk_rb *rb, void *data,
 			    struct pblk_w_ctx w_ctx, struct pblk_line *line,
-			    u64 paddr, unsigned int ring_pos)
+			    struct ppa_addr ppa, unsigned int ring_pos)
 {
 	struct pblk *pblk = container_of(rb, struct pblk, rwb);
 	struct pblk_rb_entry *entry;
@@ -360,7 +360,7 @@ void pblk_rb_write_entry_gc(struct pblk_rb *rb, void *data,
 
 	__pblk_rb_write_entry(rb, data, w_ctx, entry);
 
-	if (!pblk_update_map_gc(pblk, w_ctx.lba, entry->cacheline, line, paddr))
+	if (!pblk_update_map_gc(pblk, w_ctx.lba, entry->cacheline, line, ppa))
 		entry->w_ctx.lba = ADDR_EMPTY;
 
 	flags = w_ctx.flags | PBLK_WRITTEN_DATA;
