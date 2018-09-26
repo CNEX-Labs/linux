@@ -37,6 +37,10 @@ int pblk_line_map_init(struct pblk_line *line)
 	memset(map->bitmap, 0, lm->sec_bitmap_len);
 	map->left_msecs = lm->sec_per_line;
 
+	map->w_err_bitmap = kzalloc(lm->blk_bitmap_len, GFP_KERNEL);
+	if (!map->w_err_bitmap)
+		return -ENOMEM;
+
 	/* Capture bad block information*/
 	while ((bit = find_next_bit(line->blk_bitmap, lm->blk_per_line,
 					bit + 1)) < lm->blk_per_line) {
@@ -52,6 +56,14 @@ int pblk_line_map_init(struct pblk_line *line)
 		return -EINVAL;
 
 	map->cur_sec = find_first_zero_bit(map->bitmap, lm->sec_per_line);
+	map->cur_lun = find_first_zero_bit(line->blk_bitmap, lm->blk_per_line);
+
+	map->cur_ppa.a.blk = line->id;
+	map->cur_ppa.a.ch = pblk->luns[map->cur_lun].bppa.a.ch;
+	map->cur_ppa.a.lun = pblk->luns[map->cur_lun].bppa.a.lun;
+
+	pblk_set_dev_chunk_addr(pblk, &map->cur_ppa, 0);
+	map->cur_stripe_off = 0;
 
 	return 0;
 }
@@ -74,6 +86,9 @@ void pblk_line_map_free(struct pblk_line *line)
 
 	mempool_free(map->bitmap, l_mg->bitmap_pool);
 	map->bitmap = NULL;
+
+	kfree(map->w_err_bitmap);
+	map->w_err_bitmap = NULL;
 }
 
 int pblk_line_map_is_full(struct pblk_line *line)
@@ -88,10 +103,16 @@ void pblk_line_map_stop_writing_to_chk(struct pblk_line *line,
 				       struct ppa_addr *ppa)
 {
 	struct pblk *pblk = line->pblk;
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 	struct pblk_line_map *map = line->map;
 	struct ppa_addr map_ppa = *ppa;
 	int done = 0;
 	u64 paddr;
+	int pos;
+
+	pos = pblk_ppa_to_pos(geo, *ppa);
+	set_bit(pos, map->w_err_bitmap);
 
 	while (!done)  {
 		paddr = pblk_dev_ppa_to_line_addr(pblk, map_ppa);
@@ -172,18 +193,69 @@ u64 pblk_lookup_page(struct pblk *pblk, struct pblk_line *line)
 	return paddr;
 }
 
+static void pblk_alloc_next_lun(struct pblk *pblk, struct pblk_line_map *map)
+{
+	struct pblk_line_meta *lm = &pblk->lm;
+	unsigned int stripe_unit = pblk->min_write_pgs;
+
+	map->cur_lun++;
+	if (map->cur_lun == lm->blk_per_line) {
+		map->cur_stripe_off += stripe_unit;
+		map->cur_lun = 0;
+	}
+}
+
+static int pblk_alloc_cur_lun_has_w_err(struct pblk_line_map *map)
+{
+	return map->w_err_bitmap && test_bit(map->cur_lun, map->w_err_bitmap);
+}
+
+static void pblk_alloc(struct pblk_line *line, struct ppa_addr *ppa)
+{
+	struct pblk_line_map *map = line->map;
+	struct pblk *pblk = line->pblk;
+	unsigned int stripe_unit = pblk->min_write_pgs;
+
+	ppa->ppa = map->cur_ppa.ppa;
+
+	map->cur_sec += stripe_unit;
+	pblk_alloc_next_lun(pblk, map);
+
+	while (test_bit(map->cur_lun, line->blk_bitmap) ||
+			pblk_alloc_cur_lun_has_w_err(map)) {
+
+		map->cur_sec += stripe_unit;
+		pblk_alloc_next_lun(pblk, map);
+	}
+
+	map->cur_ppa.a.ch = pblk->luns[map->cur_lun].bppa.a.ch;
+	map->cur_ppa.a.lun = pblk->luns[map->cur_lun].bppa.a.lun;
+
+	pblk_set_dev_chunk_addr(pblk, &map->cur_ppa,
+			map->cur_stripe_off);
+}
+
 u64 pblk_map_alloc_ppas(struct pblk *pblk, struct pblk_line *line,
 			      int nr_secs, struct ppa_addr *start_ppa)
 {
+	struct pblk_line_map *map = line->map;
 	u64 paddr;
+	int i;
 
 	if (pblk->min_write_pgs != nr_secs) {
 		WARN(1, "pblk: unaligned allocation\n");
 		return 0;
 	}
 
-	paddr = pblk_alloc_page(pblk, line, nr_secs);
-	*start_ppa = addr_to_gen_ppa(pblk, paddr, line->id);
+	spin_lock(&line->lock);
+	paddr = map->cur_sec;
+	pblk_alloc(line, start_ppa);
+
+	for (i = 0; i < nr_secs; i++)
+		WARN_ON(test_and_set_bit(paddr+i, line->map->bitmap));
+
+	line->map->left_msecs -= nr_secs;
+	spin_unlock(&line->lock);
 
 	return paddr;
 }

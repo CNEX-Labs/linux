@@ -447,6 +447,12 @@ struct pblk_line_map {
 	unsigned long *bitmap;		/* Bitmap for mapped sectors in line */
 	int left_msecs;			/* Sectors left for mapping */
 	unsigned int cur_sec;		/* Sector map pointer */
+
+	unsigned int cur_lun;		/* Current lun */
+	unsigned int cur_stripe_off;	/* Current stripe offset*/
+	struct ppa_addr	cur_ppa;	/* Current address */
+
+	unsigned long *w_err_bitmap;	/* Per chunk write error tracking */
 };
 
 struct pblk_line {
@@ -1089,6 +1095,16 @@ static inline u64 pblk_dev_ppa_to_chunk_addr(struct pblk *pblk,
 
 	return dev_to_chunk_addr(geo, p);
 }
+
+static inline void pblk_set_dev_chunk_addr(struct pblk *pblk,
+					   struct ppa_addr *ppa, u64 addr)
+{
+	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
+
+	set_dev_chunk_addr(geo, ppa, addr);
+}
+
 
 static inline u64 pblk_dev_ppa_to_line_addr(struct pblk *pblk,
 							struct ppa_addr p)
