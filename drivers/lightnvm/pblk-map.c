@@ -25,38 +25,20 @@ int pblk_line_map_init(struct pblk_line *line)
 	struct nvm_tgt_dev *dev = pblk->dev;
 	struct nvm_geo *geo = &dev->geo;
 	struct pblk_line_meta *lm = &pblk->lm;
-	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
 	struct pblk_line_map *map = line->map;
-	u64 off;
-	int bit = -1;
-
-	line->map->bitmap = mempool_alloc(l_mg->bitmap_pool, GFP_KERNEL);
-	if (!line->map->bitmap)
-		return -ENOMEM;
-
-	memset(map->bitmap, 0, lm->sec_bitmap_len);
-	map->left_msecs = lm->sec_per_line;
+	int bad_blks = bitmap_weight(line->blk_bitmap, lm->blk_per_line);
 
 	map->w_err_bitmap = kzalloc(lm->blk_bitmap_len, GFP_KERNEL);
 	if (!map->w_err_bitmap)
 		return -ENOMEM;
 
-	/* Capture bad block information*/
-	while ((bit = find_next_bit(line->blk_bitmap, lm->blk_per_line,
-					bit + 1)) < lm->blk_per_line) {
-		off = bit * geo->ws_opt;
-		bitmap_shift_left(l_mg->bb_aux, l_mg->bb_template, off,
-							lm->sec_per_line);
-		bitmap_or(map->bitmap, map->bitmap, l_mg->bb_aux,
-							lm->sec_per_line);
-		map->left_msecs -= geo->clba;
-	}
-
+	map->left_msecs = lm->sec_per_line;
+	map->left_msecs -= geo->clba * bad_blks;
 	if (map->left_msecs == 0)
 		return -EINVAL;
 
-	map->cur_sec = find_first_zero_bit(map->bitmap, lm->sec_per_line);
 	map->cur_lun = find_first_zero_bit(line->blk_bitmap, lm->blk_per_line);
+	map->cur_sec = map->cur_lun * pblk->min_write_pgs;
 
 	map->cur_ppa.a.blk = line->id;
 	map->cur_ppa.a.ch = pblk->luns[map->cur_lun].bppa.a.ch;
@@ -80,12 +62,7 @@ unsigned int pblk_line_map_cur_sec(struct pblk_line *line)
 
 void pblk_line_map_free(struct pblk_line *line)
 {
-	struct pblk *pblk = line->pblk;
-	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
 	struct pblk_line_map *map = line->map;
-
-	mempool_free(map->bitmap, l_mg->bitmap_pool);
-	map->bitmap = NULL;
 
 	kfree(map->w_err_bitmap);
 	map->w_err_bitmap = NULL;
@@ -93,10 +70,7 @@ void pblk_line_map_free(struct pblk_line *line)
 
 int pblk_line_map_is_full(struct pblk_line *line)
 {
-	struct pblk *pblk = line->pblk;
-	struct pblk_line_meta *lm = &pblk->lm;
-
-	return bitmap_full(line->map->bitmap, lm->sec_per_line);
+	return line->map->left_msecs == 0;
 }
 
 void pblk_line_map_stop_writing_to_chk(struct pblk_line *line,
@@ -112,12 +86,14 @@ void pblk_line_map_stop_writing_to_chk(struct pblk_line *line,
 	int pos;
 
 	pos = pblk_ppa_to_pos(geo, *ppa);
-	set_bit(pos, map->w_err_bitmap);
+
+	if (test_and_set_bit(pos, map->w_err_bitmap))
+		return;
 
 	while (!done)  {
 		paddr = pblk_dev_ppa_to_line_addr(pblk, map_ppa);
 
-		if (!test_and_set_bit(paddr, map->bitmap))
+		if (paddr >= map->cur_sec)
 			map->left_msecs--;
 
 		done = nvm_next_ppa_in_chk(pblk->dev, &map_ppa);
@@ -125,69 +101,13 @@ void pblk_line_map_stop_writing_to_chk(struct pblk_line *line,
 
 }
 
-void pblk_dealloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs)
-{
-	struct pblk_line_map *map = line->map;
-	u64 addr;
-	int i;
-
-	spin_lock(&line->lock);
-	addr = find_next_zero_bit(map->bitmap,
-					pblk->lm.sec_per_line, map->cur_sec);
-	map->cur_sec = addr - nr_secs;
-
-	for (i = 0; i < nr_secs; i++, map->cur_sec--)
-		WARN_ON(!test_and_clear_bit(map->cur_sec, map->bitmap));
-	spin_unlock(&line->lock);
-}
-
-u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs)
-{
-	struct pblk_line_map *map = line->map;
-	u64 addr;
-	int i;
-
-	lockdep_assert_held(&line->lock);
-
-	/* logic error: ppa out-of-bounds. Prevent generating bad address */
-	if (map->cur_sec + nr_secs > pblk->lm.sec_per_line) {
-		WARN(1, "pblk: page allocation out of bounds\n");
-		nr_secs = pblk->lm.sec_per_line - map->cur_sec;
-	}
-
-	map->cur_sec = addr = find_next_zero_bit(map->bitmap,
-					pblk->lm.sec_per_line, map->cur_sec);
-	for (i = 0; i < nr_secs; i++, map->cur_sec++)
-		WARN_ON(test_and_set_bit(map->cur_sec, map->bitmap));
-
-	return addr;
-}
-
-u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs)
-{
-	u64 addr;
-
-	/* Lock needed in case a write fails and a recovery needs to remap
-	 * failed write buffer entries
-	 */
-	spin_lock(&line->lock);
-	addr = __pblk_alloc_page(pblk, line, nr_secs);
-	line->map->left_msecs -= nr_secs;
-	WARN(line->map->left_msecs < 0, "pblk: page allocation out of bounds\n");
-	spin_unlock(&line->lock);
-
-	return addr;
-}
-
-
 u64 pblk_lookup_page(struct pblk *pblk, struct pblk_line *line)
 {
 	struct pblk_line_map *map = line->map;
 	u64 paddr;
 
 	spin_lock(&line->lock);
-	paddr = find_next_zero_bit(map->bitmap,
-					pblk->lm.sec_per_line, map->cur_sec);
+	paddr = map->cur_sec;
 	spin_unlock(&line->lock);
 
 	return paddr;
@@ -240,7 +160,6 @@ u64 pblk_map_alloc_ppas(struct pblk *pblk, struct pblk_line *line,
 {
 	struct pblk_line_map *map = line->map;
 	u64 paddr;
-	int i;
 
 	if (pblk->min_write_pgs != nr_secs) {
 		WARN(1, "pblk: unaligned allocation\n");
@@ -248,13 +167,15 @@ u64 pblk_map_alloc_ppas(struct pblk *pblk, struct pblk_line *line,
 	}
 
 	spin_lock(&line->lock);
+	if (!map->left_msecs) {
+		WARN(1, "pblk: page allocation out of bounds\n");
+		spin_unlock(&line->lock);
+		return 0;
+	}
+
 	paddr = map->cur_sec;
 	pblk_alloc(line, start_ppa);
-
-	for (i = 0; i < nr_secs; i++)
-		WARN_ON(test_and_set_bit(paddr+i, line->map->bitmap));
-
-	line->map->left_msecs -= nr_secs;
+	map->left_msecs -= nr_secs;
 	spin_unlock(&line->lock);
 
 	return paddr;

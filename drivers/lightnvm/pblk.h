@@ -444,7 +444,6 @@ struct pblk_w_err_gc {
 };
 
 struct pblk_line_map {
-	unsigned long *bitmap;		/* Bitmap for mapped sectors in line */
 	int left_msecs;			/* Sectors left for mapping */
 	unsigned int cur_sec;		/* Sector map pointer */
 
@@ -551,14 +550,6 @@ struct pblk_line_mgmt {
 	struct pblk_smeta *sline_meta[PBLK_DATA_LINES];
 	struct pblk_emeta *eline_meta[PBLK_DATA_LINES];
 	unsigned long meta_bitmap;
-
-	/* Cache and mempool for map/invalid bitmaps */
-	struct kmem_cache *bitmap_cache;
-	mempool_t *bitmap_pool;
-
-	/* Helpers for fast bitmap calculations */
-	unsigned long *bb_template;
-	unsigned long *bb_aux;
 
 	unsigned long d_seq_nr;		/* Data line unique sequence number */
 	unsigned long l_seq_nr;		/* Log line unique sequence number */
@@ -900,12 +891,9 @@ int pblk_line_map_is_full(struct pblk_line *line);
 void pblk_line_map_stop_writing_to_chk(struct pblk_line *line,
 				       struct ppa_addr *ppa);
 u64 pblk_lookup_page(struct pblk *pblk, struct pblk_line *line);
-void pblk_dealloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
-u64 pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
-u64 __pblk_alloc_page(struct pblk *pblk, struct pblk_line *line, int nr_secs);
-
 u64 pblk_map_alloc_ppas(struct pblk *pblk, struct pblk_line *line,
 			      int nr_secs, struct ppa_addr *start_ppa);
+
 /*
  * pblk write thread
  */

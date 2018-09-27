@@ -430,7 +430,6 @@ int pblk_submit_meta_io(struct pblk *pblk, struct pblk_line *meta_line)
 fail_rollback:
 	pblk_up_chunk(pblk, ppa_list[0]);
 	spin_lock(&l_mg->close_lock);
-	pblk_dealloc_page(pblk, meta_line, rq_ppas);
 	list_add(&meta_line->list, &meta_line->list);
 	spin_unlock(&l_mg->close_lock);
 fail_free_bio:

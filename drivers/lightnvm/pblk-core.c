@@ -1205,8 +1205,11 @@ static int pblk_line_init_bb(struct pblk *pblk, struct pblk_line *line,
 			return 0;
 		}
 	} else {
+		struct ppa_addr dummy_ppa;
+
 		/* Smeta has been written, map and invalidate smeta secs */
-		off = pblk_alloc_page(pblk, line, lm->smeta_sec);
+		off = pblk_map_alloc_ppas(pblk, line, lm->smeta_sec,
+						&dummy_ppa);
 		pblk_invalidate_paddrs(line, off, lm->smeta_sec);
 	}
 

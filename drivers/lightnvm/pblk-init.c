@@ -551,8 +551,6 @@ static void pblk_line_mg_free(struct pblk *pblk)
 	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
 	int i;
 
-	kfree(l_mg->bb_template);
-	kfree(l_mg->bb_aux);
 	kfree(l_mg->vsc_list);
 
 	for (i = 0; i < PBLK_DATA_LINES; i++) {
@@ -560,9 +558,6 @@ static void pblk_line_mg_free(struct pblk *pblk)
 		pblk_mfree(l_mg->eline_meta[i]->buf, l_mg->emeta_alloc_type);
 		kfree(l_mg->eline_meta[i]);
 	}
-
-	mempool_destroy(l_mg->bitmap_pool);
-	kmem_cache_destroy(l_mg->bitmap_cache);
 }
 
 static void pblk_line_meta_free(struct pblk_line_mgmt *l_mg,
@@ -841,7 +836,7 @@ static int pblk_line_mg_init(struct pblk *pblk)
 	struct nvm_geo *geo = &dev->geo;
 	struct pblk_line_mgmt *l_mg = &pblk->l_mg;
 	struct pblk_line_meta *lm = &pblk->lm;
-	int i, bb_distance;
+	int i;
 
 	l_mg->nr_lines = geo->num_chk;
 	l_mg->log_line = l_mg->data_line = NULL;
@@ -874,14 +869,6 @@ static int pblk_line_mg_init(struct pblk *pblk)
 	if (!l_mg->vsc_list)
 		goto fail;
 
-	l_mg->bb_template = kzalloc(lm->sec_bitmap_len, GFP_KERNEL);
-	if (!l_mg->bb_template)
-		goto fail_free_vsc_list;
-
-	l_mg->bb_aux = kzalloc(lm->sec_bitmap_len, GFP_KERNEL);
-	if (!l_mg->bb_aux)
-		goto fail_free_bb_template;
-
 	/* smeta is always small enough to fit on a kmalloc memory allocation,
 	 * emeta depends on the number of LUNs allocated to the pblk instance
 	 */
@@ -890,17 +877,6 @@ static int pblk_line_mg_init(struct pblk *pblk)
 		if (!l_mg->sline_meta[i])
 			goto fail_free_smeta;
 	}
-
-	l_mg->bitmap_cache = kmem_cache_create("pblk_lm_bitmap",
-			lm->sec_bitmap_len, 0, 0, NULL);
-	if (!l_mg->bitmap_cache)
-		goto fail_free_smeta;
-
-	/* the bitmap pool is used for both valid and map bitmaps */
-	l_mg->bitmap_pool = mempool_create_slab_pool(PBLK_DATA_LINES * 2,
-				l_mg->bitmap_cache);
-	if (!l_mg->bitmap_pool)
-		goto fail_destroy_bitmap_cache;
 
 	/* emeta allocates three different buffers for managing metadata with
 	 * in-memory and in-media layouts
@@ -940,10 +916,6 @@ static int pblk_line_mg_init(struct pblk *pblk)
 	for (i = 0; i < l_mg->nr_lines; i++)
 		l_mg->vsc_list[i] = cpu_to_le32(EMPTY_ENTRY);
 
-	bb_distance = (geo->all_luns) * geo->ws_opt;
-	for (i = 0; i < lm->sec_per_line; i += bb_distance)
-		bitmap_set(l_mg->bb_template, i, geo->ws_opt);
-
 	return 0;
 
 fail_free_emeta:
@@ -955,16 +927,9 @@ fail_free_emeta:
 		kfree(l_mg->eline_meta[i]);
 	}
 
-	mempool_destroy(l_mg->bitmap_pool);
-fail_destroy_bitmap_cache:
-	kmem_cache_destroy(l_mg->bitmap_cache);
 fail_free_smeta:
 	for (i = 0; i < PBLK_DATA_LINES; i++)
 		kfree(l_mg->sline_meta[i]);
-	kfree(l_mg->bb_aux);
-fail_free_bb_template:
-	kfree(l_mg->bb_template);
-fail_free_vsc_list:
 	kfree(l_mg->vsc_list);
 fail:
 	return -ENOMEM;
