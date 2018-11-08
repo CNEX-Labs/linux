@@ -422,8 +422,6 @@ retry_rq:
 		return ret;
 	}
 
-	atomic_dec(&pblk->inflight_io);
-
 	/* If a read fails, do a best effort by padding the line and retrying */
 	if (rqd->error) {
 		int pad_distance, ret;

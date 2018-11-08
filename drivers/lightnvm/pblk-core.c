@@ -105,14 +105,14 @@ static void __pblk_end_io_erase(struct pblk *pblk, struct nvm_rq *rqd)
 
 	trace_pblk_chunk_state(pblk_disk_name(pblk), &rqd->ppa_addr,
 				chunk->state);
-
-	atomic_dec(&pblk->inflight_io);
 }
 
 /* Erase completion assumes that only one block is erased at the time */
 static void pblk_end_io_erase(struct nvm_rq *rqd)
 {
 	struct pblk *pblk = rqd->private;
+
+	atomic_dec(&pblk->inflight_io);
 
 	__pblk_end_io_erase(pblk, rqd);
 	mempool_free(rqd, &pblk->e_rq_pool);
@@ -508,21 +508,23 @@ void pblk_set_sec_per_write(struct pblk *pblk, int sec_per_write)
 int pblk_submit_io(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
-
-	atomic_inc(&pblk->inflight_io);
+	int ret;
 
 #ifdef CONFIG_NVM_PBLK_DEBUG
 	if (pblk_check_io(pblk, rqd))
 		return NVM_IO_ERR;
 #endif
 
-	return nvm_submit_io(dev, rqd);
+	ret = nvm_submit_io(dev, rqd);
+	if (!ret)
+		atomic_inc(&pblk->inflight_io);
+
+	return ret;
 }
 
 void pblk_check_chunk_state_update(struct pblk *pblk, struct nvm_rq *rqd)
 {
 	struct ppa_addr *ppa_list = nvm_rq_to_ppa_list(rqd);
-
 	int i;
 
 	for (i = 0; i < rqd->nr_ppas; i++) {
@@ -544,14 +546,15 @@ int pblk_submit_io_sync(struct pblk *pblk, struct nvm_rq *rqd)
 	struct nvm_tgt_dev *dev = pblk->dev;
 	int ret;
 
-	atomic_inc(&pblk->inflight_io);
 
 #ifdef CONFIG_NVM_PBLK_DEBUG
 	if (pblk_check_io(pblk, rqd))
 		return NVM_IO_ERR;
 #endif
 
+	atomic_inc(&pblk->inflight_io);
 	ret = nvm_submit_io_sync(dev, rqd);
+	atomic_dec(&pblk->inflight_io);
 
 	if (trace_pblk_chunk_state_enabled() && !ret &&
 	    rqd->opcode == NVM_OP_PWRITE)
@@ -759,8 +762,6 @@ int pblk_line_smeta_read(struct pblk *pblk, struct pblk_line *line)
 		goto clear_rqd;
 	}
 
-	atomic_dec(&pblk->inflight_io);
-
 	if (rqd.error)
 		pblk_log_read_err(pblk, &rqd);
 
@@ -814,8 +815,6 @@ static int pblk_line_smeta_write(struct pblk *pblk, struct pblk_line *line,
 		bio_put(bio);
 		goto clear_rqd;
 	}
-
-	atomic_dec(&pblk->inflight_io);
 
 	if (rqd.error) {
 		pblk_log_write_err(pblk, &rqd);
@@ -913,8 +912,6 @@ next_rq:
 		bio_put(bio);
 		goto free_rqd_dma;
 	}
-
-	atomic_dec(&pblk->inflight_io);
 
 	if (rqd.error)
 		pblk_log_read_err(pblk, &rqd);

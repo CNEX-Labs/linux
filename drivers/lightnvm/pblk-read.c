@@ -210,7 +210,6 @@ static void __pblk_end_io_read(struct pblk *pblk, struct nvm_rq *rqd,
 #endif
 
 	pblk_free_rqd(pblk, rqd, PBLK_READ);
-	atomic_dec(&pblk->inflight_io);
 }
 
 static void pblk_end_io_read(struct nvm_rq *rqd)
@@ -219,6 +218,7 @@ static void pblk_end_io_read(struct nvm_rq *rqd)
 	struct pblk_g_ctx *r_ctx = nvm_rq_to_pdu(rqd);
 	struct bio *bio = (struct bio *)r_ctx->private;
 
+	atomic_dec(&pblk->inflight_io);
 	pblk_end_user_read(bio);
 	__pblk_end_io_read(pblk, rqd, true);
 }
@@ -473,7 +473,6 @@ int pblk_submit_read(struct pblk *pblk, struct bio *bio)
 		pblk_read_rq(pblk, rqd, bio, blba, read_bitmap);
 
 	if (bitmap_full(read_bitmap, nr_secs)) {
-		atomic_inc(&pblk->inflight_io);
 		__pblk_end_io_read(pblk, rqd, false);
 		return NVM_IO_DONE;
 	}
@@ -641,8 +640,6 @@ int pblk_submit_read_gc(struct pblk *pblk, struct pblk_gc_rq *gc_rq)
 	}
 
 	pblk_read_check_rand(pblk, &rqd, gc_rq->lba_list, gc_rq->nr_secs);
-
-	atomic_dec(&pblk->inflight_io);
 
 	if (rqd.error) {
 		atomic_long_inc(&pblk->read_failed_gc);

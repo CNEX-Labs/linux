@@ -225,8 +225,6 @@ static void pblk_submit_rec(struct work_struct *work)
 	bio_put(rqd->bio);
 	pblk_free_rqd(pblk, rqd, PBLK_WRITE);
 	mempool_free(recovery, &pblk->rec_pool);
-
-	atomic_dec(&pblk->inflight_io);
 }
 
 
@@ -252,6 +250,8 @@ static void pblk_end_io_write(struct nvm_rq *rqd)
 	struct pblk *pblk = rqd->private;
 	struct pblk_c_ctx *c_ctx = nvm_rq_to_pdu(rqd);
 
+	atomic_dec(&pblk->inflight_io);
+
 	if (rqd->error) {
 		pblk_end_w_fail(pblk, rqd);
 		return;
@@ -264,7 +264,6 @@ static void pblk_end_io_write(struct nvm_rq *rqd)
 	}
 
 	pblk_complete_write(pblk, rqd, c_ctx);
-	atomic_dec(&pblk->inflight_io);
 }
 
 static void pblk_end_io_write_meta(struct nvm_rq *rqd)
@@ -277,6 +276,7 @@ static void pblk_end_io_write_meta(struct nvm_rq *rqd)
 	int sync;
 
 	pblk_up_chunk(pblk, ppa_list[0]);
+	atomic_dec(&pblk->inflight_io);
 
 	if (rqd->error) {
 		pblk_log_write_err(pblk, rqd);
@@ -293,8 +293,6 @@ static void pblk_end_io_write_meta(struct nvm_rq *rqd)
 						GFP_ATOMIC, pblk->close_wq);
 
 	pblk_free_rqd(pblk, rqd, PBLK_WRITE_INT);
-
-	atomic_dec(&pblk->inflight_io);
 }
 
 static int pblk_alloc_w_rq(struct pblk *pblk, struct nvm_rq *rqd,
