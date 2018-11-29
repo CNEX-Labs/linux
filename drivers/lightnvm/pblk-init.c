@@ -210,7 +210,7 @@ static int pblk_rwb_init(struct pblk *pblk)
 static int pblk_set_addrf_12(struct pblk *pblk, struct nvm_geo *geo,
 			     struct nvm_addrf_12 *dst)
 {
-	struct nvm_addrf_12 *src = (struct nvm_addrf_12 *)&geo->addrf;
+	struct nvm_addrf_12 *src = &geo->addrf.v12;
 	int power_len;
 
 	/* Re-calculate channel and lun format to adapt to configuration */
@@ -250,10 +250,10 @@ static int pblk_set_addrf_12(struct pblk *pblk, struct nvm_geo *geo,
 	return dst->blk_offset + src->blk_len;
 }
 
-static int pblk_set_addrf_20(struct nvm_geo *geo, struct nvm_addrf *adst,
+static int pblk_set_addrf_20(struct nvm_geo *geo, struct nvm_addrf_20 *adst,
 			     struct pblk_addrf *udst)
 {
-	struct nvm_addrf *src = &geo->addrf;
+	struct nvm_addrf_20 *src = &geo->addrf.v20;
 
 	adst->ch_len = get_count_order(geo->num_ch);
 	adst->lun_len = get_count_order(geo->num_lun);
@@ -295,10 +295,10 @@ static int pblk_set_addrf(struct pblk *pblk)
 		}
 
 		pblk->addrf_len = pblk_set_addrf_12(pblk, geo,
-							(void *)&pblk->addrf);
+							&pblk->addrf.v12);
 		break;
 	case NVM_OCSSD_SPEC_20:
-		pblk->addrf_len = pblk_set_addrf_20(geo, (void *)&pblk->addrf,
+		pblk->addrf_len = pblk_set_addrf_20(geo, &pblk->addrf.v20,
 							&pblk->uaddrf);
 		break;
 	default:

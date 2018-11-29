@@ -623,7 +623,7 @@ struct pblk {
 	struct pblk_line_mgmt l_mg;		/* Line management */
 	struct pblk_line_meta lm;		/* Line metadata */
 
-	struct nvm_addrf addrf;		/* Aligned address format */
+	union nvm_addrf addrf;		/* Aligned address format */
 	struct pblk_addrf uaddrf;	/* Unaligned address format */
 	int addrf_len;
 
@@ -1069,7 +1069,7 @@ static inline u64 pblk_dev_ppa_to_chunk_addr(struct pblk *pblk,
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
 
-	return dev_to_chunk_addr(dev->parent, &pblk->addrf, p);
+	return dev_to_chunk_addr(dev->parent, p);
 }
 
 static inline u64 pblk_dev_ppa_to_line_addr(struct pblk *pblk,

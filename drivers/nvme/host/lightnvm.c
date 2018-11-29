@@ -381,12 +381,12 @@ static int nvme_nvm_setup_12(struct nvme_nvm_id12 *id,
 	geo->num_pg = le16_to_cpu(src->num_pg);
 	geo->fpg_sz = le16_to_cpu(src->fpg_sz);
 
-	nvme_nvm_set_addr_12((struct nvm_addrf_12 *)&geo->addrf, &id->ppaf);
+	nvme_nvm_set_addr_12(&geo->addrf.v12, &id->ppaf);
 
 	return 0;
 }
 
-static void nvme_nvm_set_addr_20(struct nvm_addrf *dst,
+static void nvme_nvm_set_addr_20(struct nvm_addrf_20 *dst,
 				 struct nvme_nvm_id20_addrf *src)
 {
 	dst->ch_len = src->grp_len;
@@ -437,7 +437,7 @@ static int nvme_nvm_setup_20(struct nvme_nvm_id20 *id,
 	geo->tbet = le32_to_cpu(id->tcrst);
 	geo->tbem = le32_to_cpu(id->tcrsm);
 
-	nvme_nvm_set_addr_20(&geo->addrf, &id->lbaf);
+	nvme_nvm_set_addr_20(&geo->addrf.v20, &id->lbaf);
 
 	return 0;
 }

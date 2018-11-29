@@ -212,7 +212,7 @@ struct nvm_addrf_12 {
 	u64	sec_mask;
 };
 
-struct nvm_addrf {
+struct nvm_addrf_20 {
 	u8	ch_len;
 	u8	lun_len;
 	u8	chk_len;
@@ -230,6 +230,11 @@ struct nvm_addrf {
 	u64	chk_mask;
 	u64	sec_mask;
 	u64	rsv_mask[2];
+};
+
+union nvm_addrf {
+	struct nvm_addrf_12 v12;
+	struct nvm_addrf_20 v20;
 };
 
 enum {
@@ -378,7 +383,7 @@ struct nvm_geo {
 	u32	tbem;		/* Max Terase (ns) */
 
 	/* generic address format */
-	struct nvm_addrf addrf;
+	union nvm_addrf addrf;
 
 	/* 1.2 compatibility */
 	u8	vmnt;
@@ -444,7 +449,7 @@ static inline struct ppa_addr generic_to_dev_addr(struct nvm_dev *dev,
 	struct ppa_addr l;
 
 	if (geo->version == NVM_OCSSD_SPEC_12) {
-		struct nvm_addrf_12 *ppaf = (struct nvm_addrf_12 *)&geo->addrf;
+		struct nvm_addrf_12 *ppaf = &geo->addrf.v12;
 
 		l.ppa = ((u64)r.g.ch) << ppaf->ch_offset;
 		l.ppa |= ((u64)r.g.lun) << ppaf->lun_offset;
@@ -453,7 +458,7 @@ static inline struct ppa_addr generic_to_dev_addr(struct nvm_dev *dev,
 		l.ppa |= ((u64)r.g.pl) << ppaf->pln_offset;
 		l.ppa |= ((u64)r.g.sec) << ppaf->sec_offset;
 	} else {
-		struct nvm_addrf *lbaf = &geo->addrf;
+		struct nvm_addrf_20 *lbaf = &geo->addrf.v20;
 
 		l.ppa = ((u64)r.m.grp) << lbaf->ch_offset;
 		l.ppa |= ((u64)r.m.pu) << lbaf->lun_offset;
@@ -473,7 +478,7 @@ static inline struct ppa_addr dev_to_generic_addr(struct nvm_dev *dev,
 	l.ppa = 0;
 
 	if (geo->version == NVM_OCSSD_SPEC_12) {
-		struct nvm_addrf_12 *ppaf = (struct nvm_addrf_12 *)&geo->addrf;
+		struct nvm_addrf_12 *ppaf = &geo->addrf.v12;
 
 		l.g.ch = (r.ppa & ppaf->ch_mask) >> ppaf->ch_offset;
 		l.g.lun = (r.ppa & ppaf->lun_mask) >> ppaf->lun_offset;
@@ -482,7 +487,7 @@ static inline struct ppa_addr dev_to_generic_addr(struct nvm_dev *dev,
 		l.g.pl = (r.ppa & ppaf->pln_mask) >> ppaf->pln_offset;
 		l.g.sec = (r.ppa & ppaf->sec_mask) >> ppaf->sec_offset;
 	} else {
-		struct nvm_addrf *lbaf = &geo->addrf;
+		struct nvm_addrf_20 *lbaf = &geo->addrf.v20;
 
 		l.m.grp = (r.ppa & lbaf->ch_mask) >> lbaf->ch_offset;
 		l.m.pu = (r.ppa & lbaf->lun_mask) >> lbaf->lun_offset;
@@ -493,14 +498,13 @@ static inline struct ppa_addr dev_to_generic_addr(struct nvm_dev *dev,
 	return l;
 }
 
-static inline u64 dev_to_chunk_addr(struct nvm_dev *dev, void *addrf,
-				    struct ppa_addr p)
+static inline u64 dev_to_chunk_addr(struct nvm_dev *dev, struct ppa_addr p)
 {
 	struct nvm_geo *geo = &dev->geo;
 	u64 caddr;
 
 	if (geo->version == NVM_OCSSD_SPEC_12) {
-		struct nvm_addrf_12 *ppaf = (struct nvm_addrf_12 *)addrf;
+		struct nvm_addrf_12 *ppaf = &geo->addrf.v12;
 
 		caddr = (u64)p.g.pg << ppaf->pg_offset;
 		caddr |= (u64)p.g.pl << ppaf->pln_offset;
@@ -513,7 +517,8 @@ static inline u64 dev_to_chunk_addr(struct nvm_dev *dev, void *addrf,
 }
 
 static inline struct ppa_addr nvm_ppa32_to_ppa64(struct nvm_dev *dev,
-						 void *addrf, u32 ppa32)
+						 union nvm_addrf *addrf,
+						 u32 ppa32)
 {
 	struct ppa_addr ppa64;
 
@@ -528,7 +533,7 @@ static inline struct ppa_addr nvm_ppa32_to_ppa64(struct nvm_dev *dev,
 		struct nvm_geo *geo = &dev->geo;
 
 		if (geo->version == NVM_OCSSD_SPEC_12) {
-			struct nvm_addrf_12 *ppaf = addrf;
+			struct nvm_addrf_12 *ppaf = &addrf->v12;
 
 			ppa64.g.ch = (ppa32 & ppaf->ch_mask) >>
 							ppaf->ch_offset;
@@ -543,7 +548,7 @@ static inline struct ppa_addr nvm_ppa32_to_ppa64(struct nvm_dev *dev,
 			ppa64.g.sec = (ppa32 & ppaf->sec_mask) >>
 							ppaf->sec_offset;
 		} else {
-			struct nvm_addrf *lbaf = addrf;
+			struct nvm_addrf_20 *lbaf = &addrf->v20;
 
 			ppa64.m.grp = (ppa32 & lbaf->ch_mask) >>
 							lbaf->ch_offset;
@@ -560,7 +565,8 @@ static inline struct ppa_addr nvm_ppa32_to_ppa64(struct nvm_dev *dev,
 }
 
 static inline u32 nvm_ppa64_to_ppa32(struct nvm_dev *dev,
-				     void *addrf, struct ppa_addr ppa64)
+				     union nvm_addrf *addrf,
+				     struct ppa_addr ppa64)
 {
 	u32 ppa32 = 0;
 
@@ -573,7 +579,7 @@ static inline u32 nvm_ppa64_to_ppa32(struct nvm_dev *dev,
 		struct nvm_geo *geo = &dev->geo;
 
 		if (geo->version == NVM_OCSSD_SPEC_12) {
-			struct nvm_addrf_12 *ppaf = addrf;
+			struct nvm_addrf_12 *ppaf = &addrf->v12;
 
 			ppa32 |= ppa64.g.ch << ppaf->ch_offset;
 			ppa32 |= ppa64.g.lun << ppaf->lun_offset;
@@ -582,7 +588,7 @@ static inline u32 nvm_ppa64_to_ppa32(struct nvm_dev *dev,
 			ppa32 |= ppa64.g.pl << ppaf->pln_offset;
 			ppa32 |= ppa64.g.sec << ppaf->sec_offset;
 		} else {
-			struct nvm_addrf *lbaf = addrf;
+			struct nvm_addrf_20 *lbaf = &addrf->v20;
 
 			ppa32 |= ppa64.m.grp << lbaf->ch_offset;
 			ppa32 |= ppa64.m.pu << lbaf->lun_offset;

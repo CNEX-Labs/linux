@@ -117,8 +117,8 @@ static ssize_t pblk_sysfs_ppaf(struct pblk *pblk, char *page)
 	ssize_t sz = 0;
 
 	if (geo->version == NVM_OCSSD_SPEC_12) {
-		struct nvm_addrf_12 *ppaf = (struct nvm_addrf_12 *)&pblk->addrf;
-		struct nvm_addrf_12 *gppaf = (struct nvm_addrf_12 *)&geo->addrf;
+		struct nvm_addrf_12 *ppaf = &pblk->addrf.v12;
+		struct nvm_addrf_12 *gppaf = &geo->addrf.v12;
 
 		sz = snprintf(page, PAGE_SIZE,
 			"g:(b:%d)blk:%d/%d,pg:%d/%d,lun:%d/%d,ch:%d/%d,pl:%d/%d,sec:%d/%d\n",
@@ -139,8 +139,8 @@ static ssize_t pblk_sysfs_ppaf(struct pblk *pblk, char *page)
 			gppaf->pln_offset, gppaf->pln_len,
 			gppaf->sec_offset, gppaf->sec_len);
 	} else {
-		struct nvm_addrf *ppaf = &pblk->addrf;
-		struct nvm_addrf *gppaf = &geo->addrf;
+		struct nvm_addrf_20 *ppaf = &pblk->addrf.v20;
+		struct nvm_addrf_20 *gppaf = &geo->addrf.v20;
 
 		sz = snprintf(page, PAGE_SIZE,
 			"pblk:(s:%d)ch:%d/%d,lun:%d/%d,chk:%d/%d/sec:%d/%d\n",
