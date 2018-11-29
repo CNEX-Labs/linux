@@ -498,22 +498,35 @@ static inline struct ppa_addr dev_to_generic_addr(struct nvm_dev *dev,
 	return l;
 }
 
-static inline u64 dev_to_chunk_addr(struct nvm_dev *dev, struct ppa_addr p)
+static inline u64 dev_to_chunk_addr(struct nvm_geo *geo, struct ppa_addr ppa)
 {
-	struct nvm_geo *geo = &dev->geo;
 	u64 caddr;
 
 	if (geo->version == NVM_OCSSD_SPEC_12) {
 		struct nvm_addrf_12 *ppaf = &geo->addrf.v12;
 
-		caddr = (u64)p.g.pg << ppaf->pg_offset;
-		caddr |= (u64)p.g.pl << ppaf->pln_offset;
-		caddr |= (u64)p.g.sec << ppaf->sec_offset;
+		caddr = ppa.g.pg << ppaf->pg_offset;
+		caddr |= ppa.g.pl << ppaf->pln_offset;
+		caddr |= ppa.g.sec << ppaf->sec_offset;
 	} else {
-		caddr = p.m.sec;
+		caddr = ppa.m.sec;
 	}
 
 	return caddr;
+}
+
+static inline void set_dev_chunk_addr(struct nvm_geo *geo, struct ppa_addr *ppa,
+				      u64 caddr)
+{
+	if (geo->version == NVM_OCSSD_SPEC_12) {
+		struct nvm_addrf_12 *ppaf = &geo->addrf.v12;
+
+		ppa->g.pg = (caddr & ppaf->pg_mask) >> ppaf->pg_offset;
+		ppa->g.pl = (caddr & ppaf->pln_mask) >> ppaf->pln_offset;
+		ppa->g.sec = (caddr & ppaf->sec_mask) >> ppaf->sec_offset;
+	} else {
+		ppa->m.sec = caddr;
+	}
 }
 
 static inline struct ppa_addr nvm_ppa32_to_ppa64(struct nvm_dev *dev,
@@ -604,37 +617,12 @@ static inline int nvm_next_ppa_in_chk(struct nvm_tgt_dev *dev,
 				      struct ppa_addr *ppa)
 {
 	struct nvm_geo *geo = &dev->geo;
-	int last = 0;
+	u64 caddr;
 
-	if (geo->version == NVM_OCSSD_SPEC_12) {
-		int sec = ppa->g.sec;
+	caddr = dev_to_chunk_addr(geo, *ppa) + 1;
+	set_dev_chunk_addr(geo, ppa, caddr);
 
-		sec++;
-		if (sec == geo->ws_min) {
-			int pg = ppa->g.pg;
-
-			sec = 0;
-			pg++;
-			if (pg == geo->num_pg) {
-				int pl = ppa->g.pl;
-
-				pg = 0;
-				pl++;
-				if (pl == geo->num_pln)
-					last = 1;
-
-				ppa->g.pl = pl;
-			}
-			ppa->g.pg = pg;
-		}
-		ppa->g.sec = sec;
-	} else {
-		ppa->m.sec++;
-		if (ppa->m.sec == geo->clba)
-			last = 1;
-	}
-
-	return last;
+	return caddr == geo->clba;
 }
 
 typedef blk_qc_t (nvm_tgt_make_rq_fn)(struct request_queue *, struct bio *);

@@ -1068,8 +1068,9 @@ static inline u64 pblk_dev_ppa_to_chunk_addr(struct pblk *pblk,
 							struct ppa_addr p)
 {
 	struct nvm_tgt_dev *dev = pblk->dev;
+	struct nvm_geo *geo = &dev->geo;
 
-	return dev_to_chunk_addr(dev->parent, p);
+	return dev_to_chunk_addr(geo, p);
 }
 
 static inline u64 pblk_dev_ppa_to_line_addr(struct pblk *pblk,
