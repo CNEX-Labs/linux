@@ -215,9 +215,9 @@ next_rq:
 
 	nr_secs = 0;
 	do {
-		if (!pblk_paddr_is_invalid(line, paddr)) {
-			u64 lba = le64_to_cpu(lba_list[paddr]);
+		u64 lba = le64_to_cpu(lba_list[paddr]);
 
+		if (!pblk_paddr_is_invalid(line, paddr) && lba != ADDR_EMPTY) {
 			gc_rq->ppa_list[nr_secs] = addr_to_gen_ppa(pblk, paddr,
 								line->id);
 			gc_rq->lba_list[nr_secs++] = lba;
