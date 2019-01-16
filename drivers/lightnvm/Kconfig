@@ -16,6 +16,17 @@ menuconfig NVM
 
 if NVM
 
+config NVM_LZBD
+	tristate "Zoned Block Device Open-Channel SSD target"
+	depends on BLK_DEV_ZONED
+	help
+	  Allows an open-channel SSD to be exposed as a zoned block device to the
+	  host.
+
+	  Highly EXPERIMENTAL for now.
+
+	  Only say Y if you want to play with it.
+
 config NVM_PBLK
 	tristate "Physical Block Device Open-Channel SSD target"
 	help

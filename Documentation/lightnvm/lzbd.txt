@@ -1,0 +1,122 @@
+lzbd: A Zoned Block Device LightNVM Target
+==========================================
+
+The lzbd lightnvm target makes it possible to expose an Open-Channel 2.0 SSD
+as one or more zoned block devices.
+
+Each lightnvm target is assigned a range of parallel units. Parallel units(PUs)
+are not shared among targets avoiding I/O QoS disturbances between targets as
+far as possible.
+
+For more information on lightnvm, see [1]
+For more information on Open-Channel 2.0, see [2].
+For more information on zoned block devices see [3].
+
+lzbd is designed to act as a slim adaptor, making it possible to plug
+OCSSD 2.0 SSDs into the zone block device ecosystem.
+
+lzbd manages zone to chunk mapping, read/write restrictions,  wear leveling
+and write errors.
+
+Zone geometry
+-------------
+
+From a user perspective, lzbd targets form a number of sequential-write-required
+(BLK_ZONE_TYPE_SEQWRITE_REQ) zones.
+
+Not all of the target's capacity is exposed to the user.
+Some chunks are reserved for metadata and over-provisioning.
+
+The zones follow the same constraints as described in [3].
+
+All zones are of the same size (SZ).
+
+Simple example:
+
+Sector	 		Zone type
+		 _______________________
+0    -->	| Sequential write req. |
+		|                       |
+		|_______________________|
+SZ   -->	| Sequential write req. |
+		|                       |
+		|_______________________|
+SZ*2..-->	| Sequential write req. |
+		|                       |
+..........	.........................
+		|_______________________|
+SZ*N-1 -->	| Sequential write req. |
+		|_______________________|
+
+
+SZ is configurable, but is restricted to a multiple of
+(chunk size (CLBA) * Number of PUs).
+
+Zone to chunk mapping
+---------------------
+
+Zones are spread across PUs to allow maximum write throughput through striping.
+One or more chunks (CHK) per PU is assigned.
+
+Example:
+
+OCSSD 2.0 Geometry: 4 PUs, 16 chunks per PU.
+Zones: 3
+
+ Zone	  PU0	PU1   PU2   PU3
+_______  _____ _____ _____ _____
+        |CHK 0|CHK 0|CHK A|CHK 0|
+ 0      |CHK 2|CHK 3|CHK 3|CHK 1|
+_______ |_____|_____|_____|_____|
+        |CHK 3|CHK B|CHK 8|CHK A|
+ 1      |CHK 7|CHK F|CHK 2|CHK 3|
+_______ |_____|_____|_____|_____|
+        |CHK 8|CHK 2|CHK 7|CHK 4|
+ 2      |CHK 1|CHK A|CHK 5|CHK 2|
+_______ |_____|_____|_____|_____|
+
+Chunks are assigned to a zone when it is opened based on the chunk wear index.
+
+Note: The disk's Maximum Open Chunks (MAXOC) limit puts an upper bound on
+maximum simultaneously open zones (unless MAXOC = 0).
+
+Meta data and over-provisioning
+-------------------------------
+
+lzbd needs the following meta data to be persisted:
+
+* a zone-to chunk mapping (Z2C) table, size: 4 bytes * Number of chunks
+* a superblock containing target configuration, guuid, on-disk format version,
+  etc.
+
+Additionally, chunks need to be reserved for handling:
+
+* write errors
+* chunks wearing out and going offline
+* persisting data not aligned with the minimal write constraint
+
+The meta data is stored a separate set of chunks from the user data.
+
+Host memory requirements
+------------------------
+
+The Z2C mapping table needs to be kept in host memory (see above), and:
+
+* in order to achieve maximum throughput and alignment requirements,
+  a small write buffer is needed
+	Size: Optimal Write Size (WS_OPT) * Maximum number of open zones.
+
+* to satisify OCSSD 2.0 read restrictions, a read buffer is needed.
+	Size: Number of PUs * Cache Minimum Write Size Units (MW_CUNITS) *
+	Maximum number of open zones.
+
+If MW_CUNITS = 0, no read buffer is needed and data can be written without
+any host copying/buffering (except for handling WS_OPT alignment).
+
+References
+----------
+
+[1] Lightnvm website: http://lightnvm.io/
+[2] OCSSD 2.0 Specification: http://lightnvm.io/docs/OCSSD-2_0-20180129.pdf
+[3] ZBC / Zoned block device support: https://lwn.net/Articles/703871/
+
